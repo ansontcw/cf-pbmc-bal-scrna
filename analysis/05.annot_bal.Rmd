@@ -1,0 +1,2164 @@
+---
+title: 'BAL cell manual annotation'
+author:
+- name: Anson Wong
+date: "`r Sys.Date()`"
+description: null
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()
+
+```
+
+# 1 Load packages
+
+```{r}
+suppressPackageStartupMessages({
+library(Seurat)
+library(here)
+library(qs)
+library(forcats)
+library(pals)
+library(ggplot2)
+library(speckle)
+library(scCustomize)
+library(patchwork)
+library(dplyr)
+library(Cepo)
+library(rstatix)
+library(ggpubr)
+library(tibble)
+library(readr)
+library(rcartocolor)
+})
+options(future.globals.maxSize = 500000000000, future.seed=TRUE)
+set.seed(1990)
+
+```
+
+# 2 Reference-based annotation
+Reference-based annotation was performed on the clustered dataset using three references:
+a. Wong et al 2025. For details, refer to analysis/05.annotation_Wong.Rmd
+
+b. Azimuth PBMC using RunAzimuth(). Due to internal in-house server compatibility issues, 
+R v4.2.2 instead of R v4.1.2 was used for running this step. 
+or details, refer to code/azimuth_lungv2.R
+
+## 2.1 Load object
+```{r}
+out <- here("data","SCEs","annotation",
+            "bal.preprocessed.merged.integrated.clustered.Wong.Azimuth.rd.SEU.qs")
+if (!file.exists(out)) {
+  seu <- qread(here("data",
+                    "SCEs",
+                    "annotation",
+                    "bal.preprocessed.merged.integrated.clustered.Wong.Azimuth.SEU.qs"), nthreads=24)
+  
+  DefaultAssay(seu) <- "SCT"
+  # remove some info to reduce the file size
+  seu@assays$prediction.score.ann_level_1 <- NULL
+  seu@assays$prediction.score.ann_level_2 <- NULL
+  seu@assays$prediction.score.ann_level_3 <- NULL
+  seu@assays$prediction.score.ann_level_4 <- NULL
+  seu@assays$prediction.score.ann_level_5 <- NULL
+  seu@assays$prediction.score.ann_finest_level <- NULL
+  seu@assays$prediction.score.celltype <- NULL
+  seu@assays$prediction.score.sampleID <- NULL
+  seu@reductions$azimuth.umap <- NULL
+  seu@reductions$ref.pca <- NULL
+  seu@reductions$ref.umap <- NULL
+  seu@reductions$integrated_dr <- NULL
+  seu@assays$refAssay <- NULL
+  gc()
+  
+  # save object with reduced file size
+  qsave(seu, file=out, nthreads=16)
+  
+} else {
+  seu <- qread(out,nthreads=16)
+}
+
+Condition2.colours <- setNames(c("#26547c","#ffd166","#ef476f"),
+                               c("C","CFN","CFB"))
+```
+
+## 2.2 Prepare object for downstream analysis
+```{r}
+seu.backup <- seu
+seu$Condition <- fct_drop(seu$Condition)
+seu$sampleID <- fct_drop(seu$sampleID)
+
+# Assign ID for analysis
+seu$sampleID <- factor(seu$sampleID,
+                       levels=c("M1N066","M1N075","M1N078","M1N080","M1N087","M1N092", # healthy
+                                "M1C176C","M1C180D","M1C191B","M1C199B","M1C201A","M1C207B", # CFN
+                                "M1C166(1)","M1C190C","M1C196B","M1C198B","M1C208A","M1C209A"
+                                ))
+
+# Add Condition
+Condition <- factor(
+      case_when(
+        seu$sampleID %in% c("M1N066","M1N075","M1N078","M1N080","M1N087","M1N092") ~ "C",
+        seu$sampleID %in% c("M1C176C","M1C180D","M1C191B","M1C199B","M1C201A","M1C207B",
+                            "M1C166(1)","M1C190C","M1C196B","M1C198B","M1C208A","M1C209A") ~ "CF"))
+
+names(Condition) <- colnames(seu)
+seu <- AddMetaData(seu, Condition, col.name = "Condition")
+seu$Condition <- factor(seu$Condition,levels=c("C","CF"))
+
+# Add Condition 3
+Condition2 <- factor(
+      case_when(
+        seu$sampleID %in% c("M1N066","M1N075","M1N078","M1N080","M1N087","M1N092") ~ "C",
+        seu$sampleID %in% c("M1C176C","M1C180D","M1C191B","M1C199B","M1C201A","M1C207B") ~ "CFN",
+        seu$sampleID %in% c("M1C166(1)","M1C190C","M1C196B","M1C198B","M1C208A","M1C209A") ~ "CFB"))
+
+names(Condition2) <- colnames(seu)
+seu <- AddMetaData(seu, Condition2, col.name = "Condition2")
+seu$Condition2 <- factor(seu$Condition2,levels=c("C","CFN","CFB"))
+
+# Set ID for this study
+ID <- setNames(c("C-NP1","C-NP2","C-NP3","C-NP4","C-4","C-5",
+                 paste0("CF-",1:12)),
+               levels(seu$sampleID))
+
+ID <- setNames(factor(ID[seu$sampleID],
+                      levels=c("C-NP1","C-NP2","C-NP3","C-NP4","C-4","C-5",
+                               paste0("CF-",1:12))),
+               colnames(seu))
+
+seu <- AddMetaData(seu, ID, col.name = "ID")
+
+# Set ID2 for this study
+ID2 <- setNames(c("C-NP1","C-NP2","C-NP3","C-NP4","C-4","C-5",
+                  paste0("CFN-",1:6),paste0("CFB-",1:6)),
+               levels(seu$sampleID))
+
+ID2 <- setNames(factor(ID2[seu$sampleID],
+                       levels=c("C-NP1","C-NP2","C-NP3","C-NP4","C-4","C-5",
+                                paste0("CFN-",1:6),paste0("CFB-",1:6))),
+               colnames(seu))
+
+seu <- AddMetaData(seu, ID2, col.name = "ID2")
+
+# Re-order levels of SCT_snn_res.3
+seu$SCT_snn_res.3 <- factor(seu$SCT_snn_res.3, levels=as.character(seq(1, length(levels(seu$SCT_snn_res.3)))))
+
+# Number of droplets after annotation
+dim(seu)
+```
+
+# 3. Visualize annotation
+```{r}
+# prepare colours
+colours <- c(brewer.paired(12), brewer.pastel1(9),  brewer.pastel2(8), brewer.spectral(11), 
+             rev(brewer.accent(8)), rev(brewer.dark2(8)), 
+             brewer.set1(9), brewer.pastel2(8), brewer.spectral(11), 
+             brewer.brbg(11)[1:5],rev(brewer.set3(12)),brewer.brbg(11)[6:11],
+             brewer.piyg(11)[1:5],brewer.piyg(11)[7:11], brewer.piyg(11)[1:5],brewer.piyg(11)[7:11])
+
+Condition.colours <- setNames(c("#81b29a","#e07a5f"),
+                               levels(seu$Condition))
+
+Condition2.colours <- setNames(c("#81b29a","#d69f7e","#ff8fab"),
+                               levels(seu$Condition2))
+```
+
+## 3.1 UMAP 
+### 3.1.1 Not split
+```{r fig.width=8,fig.height=8}
+
+group <- setNames(c("Wong_celltype",
+                    "Azimuth_l3","Azimuth_finest",
+                    "SCT_snn_res.3"),
+                  c("predicted.celltype",
+                    "predicted.ann_level_3","predicted.ann_finest_level",
+                    "SCT_snn_res.3")
+                  )
+plots <- list()
+plots <- sapply(names(group), FUN = function(x) {
+  p <- DimPlot(seu, 
+        reduction = 'umap',
+        pt.size = 0.1,
+        label.box = TRUE,
+        label = TRUE, 
+        shuffle = TRUE,
+        raster=FALSE,
+        repel = TRUE,
+        label.size = 2, 
+        cols=colours,
+        group.by = x) + NoLegend() +
+  labs(x = NULL, y = NULL, title = group[x]) + 
+  guides(x = "none", y = "none") +
+  theme(#plot.title = element_blank(),
+        text=element_text(family="Arial"),
+        axis.text = element_text(size=8),
+        axis.title.y=element_text(vjust=-1,
+                                  size=10),
+        axis.title.x=element_text(#vjust=10,
+                                  size=10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(face = "bold", vjust=2, size=12))
+  return(p)
+})
+
+((plots[[1]] + plots[[2]] + plot_layout(widths=c(1, 1)))/
+    (plots[[3]] + plots[[4]] + plot_layout(widths=c(1, 1)))) +
+  plot_layout(guides="collect")
+```
+
+### 3.1.2 SCT_snn_res.3 showing legend 
+```{r fig.height=5, fig.width=6, fig.dpi=800}
+DimPlot(seu, 
+        reduction = 'umap',
+        pt.size = 0.1,
+        label.box = FALSE,
+        label = TRUE, 
+        shuffle = TRUE,
+        raster=FALSE,
+        repel = TRUE,
+        label.size = 2, 
+        cols=colours,
+        group.by = "SCT_snn_res.3") + #NoLegend() +
+  #labs(x = NULL, y = NULL, title = group[x]) + 
+  guides(x = "none", y = "none") +
+  theme(#plot.title = element_blank(),
+        text=element_text(family="Arial"),
+        axis.text = element_text(size=8),
+        axis.title.y=element_text(vjust=-1,
+                                  size=10),
+        axis.title.x=element_text(#vjust=10,
+                                  size=10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(face = "bold", vjust=2, size=12))
+
+```
+
+
+### 3.1.3 Split
+```{r}
+plots <- list()
+plots <- sapply(names(group), FUN = function(x) {
+  p <- DimPlot(seu, 
+        reduction = 'umap',
+        pt.size = 0.1,
+        label.box = FALSE,
+        label = TRUE, 
+        shuffle = TRUE,
+        raster=FALSE,
+        repel = TRUE,
+        label.size = 2, 
+        cols=colours,
+        split.by = "Condition2",
+        group.by = x) + #NoLegend() +
+  labs(x = NULL, y = NULL, title = group[x]) + 
+  guides(x = "none", y = "none") +
+  theme(#plot.title = element_blank(),
+        text=element_text(family="Arial"),
+        axis.text = element_text(size=8),
+        axis.title.y=element_text(vjust=-1,
+                                  size=10),
+        axis.title.x=element_text(#vjust=10,
+                                  size=10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(face = "bold", vjust=2, size=12))
+  return(p)
+})
+```
+
+::::: {.panelset}
+
+::: {.panel}
+
+#### Wong broad {.panel-name}
+
+```{r fig.width=14,fig.height=4}
+(plots[[1]]) + plot_layout(guides="collect")
+
+```
+
+:::
+
+::: {.panel}
+
+#### Azimuth {.panel-name}
+
+```{r fig.width=18,fig.height=8}
+(plots[[2]]/plots[[3]]) + plot_layout(guides="collect")
+
+```
+
+:::
+
+::: {.panel}
+
+#### SCT_snn_res.3 {.panel-name}
+
+```{r fig.width=14,fig.height=4}
+plots[[4]] + plot_layout(guides="collect")
+
+```
+
+:::
+
+:::::
+
+### 3.1.4 Check batch effect
+::::: {.panelset}
+
+::: {.panel}
+
+#### By batch {.panel-name}
+```{r fig.width=12,fig.height=4}
+DimPlot(seu, 
+        reduction = 'umap',
+        pt.size = 0.1,
+        label.box = FALSE,
+        label = FALSE, 
+        shuffle = TRUE,
+        raster=FALSE,
+        repel = TRUE,
+        label.size = 2, ncol = 4,
+        cols=colours,
+        split.by = "batchID",
+        group.by = "SCT_snn_res.3") +
+  guides(x = "none", y = "none") +
+  theme(
+        text=element_text(family="Arial"),
+        axis.text = element_text(size=8),
+        axis.title.y=element_text(vjust=-1,
+                                  size=10),
+        axis.title.x=element_text(#vjust=10,
+                                  size=10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(face = "bold", vjust=2, size=12))
+```
+:::
+
+::: {.panel}
+
+#### By Condition {.panel-name}
+```{r fig.width=12,fig.height=4}
+DimPlot(seu, 
+        reduction = 'umap',
+        pt.size = 0.1,
+        label.box = FALSE,
+        label = FALSE, 
+        shuffle = TRUE,
+        raster=FALSE,
+        repel = TRUE,
+        label.size = 2, ncol = 5,
+        cols=colours,
+        split.by = "Condition2",
+        group.by = "SCT_snn_res.3") + 
+  guides(x = "none", y = "none") +
+  theme(
+        text=element_text(family="Arial"),
+        axis.text = element_text(size=8),
+        axis.title.y=element_text(vjust=-1,
+                                  size=10),
+        axis.title.x=element_text(#vjust=10,
+                                  size=10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(face = "bold", vjust=2, size=12))
+```
+
+:::
+:::::
+
+## 3.2 Proportion of cells per cluster
+```{r}
+labels <- group
+p <- vector("list",length(labels))
+
+for(label in names(labels)){
+  seu@meta.data %>%
+    ggplot(aes(x = !!sym(label), fill = !!sym(label))) +
+    geom_bar() +
+    geom_text(aes(label = ..count.., vjust=0.5, angle=45), size=3, stat = "count",
+              colour = "black") +
+    scale_y_log10() +
+    theme(axis.text.x = element_blank(),
+          axis.title.x = element_blank(),
+          axis.ticks.x = element_blank()) +
+    NoLegend() + scale_fill_manual(values = colours) +
+    labs(y = "# cells (log scale)") -> p1
+  
+  seu@meta.data %>%
+    dplyr::select(!!sym(label), Condition3) %>%
+    group_by(!!sym(label), Condition3) %>%
+    summarise(num = n()) %>%
+    mutate(prop = num / sum(num)) %>%
+  ggplot(aes(x = !!sym(label), y = prop * 100, 
+             fill = Condition3)) + 
+    geom_bar(stat = "identity") +
+    theme(axis.text.x = element_text(angle = 45, size=6,
+                                     vjust = 1, 
+                                     hjust = 1)) +
+    labs(y = "% Cells", fill = "Condition3") + scale_fill_manual(values = Condition3.colours)-> p2
+  
+  p1 / p2 -> p[[label]]
+}
+
+```
+
+::::: {.panelset}
+
+::: {.panel}
+
+### Wong_broad {.panel-name}
+
+```{r fig.width=8,fig.height=6}
+p$predicted.celltype + plot_layout(guides="collect")
+
+```
+
+:::
+
+::: {.panel}
+
+### Azimuth lv3 {.panel-name}
+
+```{r fig.width=8,fig.height=6}
+p$predicted.ann_level_3 + plot_layout(guides="collect")
+
+```
+
+:::
+
+::: {.panel}
+
+### Azimuth finest {.panel-name}
+
+```{r fig.width=8,fig.height=6}
+p$predicted.ann_finest_level + plot_layout(guides="collect")
+
+```
+
+:::
+
+::: {.panel}
+
+### SCT_snn_res.3 {.panel-name}
+
+```{r fig.width=8,fig.height=6}
+p$SCT_snn_res.3 + plot_layout(guides="collect")
+
+```
+
+:::
+
+:::::
+
+
+## 3.3 Cepo
+```{r}
+# Run Cepo
+cepoMarkers <- Cepo(seu[["SCT"]]@data,
+                    seu$SCT_snn_res.3,
+                    exprsPct = 0.2)
+cepoMarkers$stats
+
+sapply(1:ncol(cepoMarkers$stats), function(i){
+  names(sort(cepoMarkers$stats[,i], decreasing = TRUE))[1:100]
+}) %>% data.frame() -> dat
+
+colnames(dat) <- gsub("^X","",colnames(cepoMarkers$stats))
+
+# Get the column names of your data frame
+current_colnames <- colnames(dat)
+
+# Convert the names to numeric type, sort them, and then convert back to character
+sorted_colnames <- as.character(sort(as.numeric(current_colnames)))
+
+# Reorder the 'dat' data frame using the numerically sorted column names
+dat <- dat[, sorted_colnames]
+
+# Verify the new order
+head(dat)
+
+if (!dir.exists(here("data","Cepo"))) {
+  dir.create(here("data","Cepo"))
+}
+dat %>% data.frame(check.names = FALSE) %>% write.csv(file = here("data","Cepo","bal.markers.SCT_snn_res.3.csv"),row.names = FALSE)
+
+```
+
+# 4. Cluster curation
+
+## 4.1 DotPlots
+
+::::: {.panelset}
+::: {.panel}
+### Broad marker genes {.panel-name}
+```{r fig.width=18,fig.height=15}
+# factorize metadata
+seu$predicted.celltype <- factor(seu$predicted.celltype)
+seu$predicted.ann_level_3 <- factor(seu$predicted.ann_level_3)
+seu$predicted.ann_finest_level <- factor(seu$predicted.ann_finest_level)
+
+# Gene list
+## Wong 2025, derived from Fig1D
+Wong.genes <- c("FABP4","GPD1","PCOLCE2","MME","SCD", # AM
+                "VCAN","FCN1","EMP1","CD14","CCL2", # RecM
+                "PCLAF","MKI67","TOP2A", # Prolif.M
+                "CLEC10A","CD1C","LGALS2", # cDC
+                "JCHAIN","PTPRS","CLEC4C", # pDC
+                "CCR7","LAD1","COL19","CCL22","LAMP3","SLCO5A1", # DC migratory
+                "CPA3","TPSAB1","TPSB2", # mast
+                "CD3D","CD3G","CD3E", # T
+                "CD4","FOXP3","TCF7","IL2RA","BCL6","CXCR5", # CD4
+                "CD8A","CD8B","GZMB","GZMH","NKG7","KLRD1","EOMES", # CD4 & CD8
+                "GNLY","NCAM1","KLRC1","NCR1","FCGR3A", # NK
+                "MS4A1","EBF1","PAX5", # B
+                "CHST9","MUC16","MUC4") # Epithelial
+
+p2 <- DotPlot(seu,
+        features = Wong.genes,
+        group.by = "SCT_snn_res.3",
+        col.max = 3,
+        col.min = 0,
+        dot.scale = 6
+        ) + #coord_flip() +
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  FontSize(y.text = 10, x.text = 8) + 
+  labs(y = element_blank(), x = element_blank()) + 
+  theme(text=element_text(family="Ariel"),
+        axis.text.x = element_text(size=10,
+                                   face="italic",
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        axis.text.y = element_text(size=10),
+        legend.direction="horizontal",
+        legend.position="bottom",
+        legend.justification = "right",
+        legend.box="vertical",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8,family = "Arial"),
+        ) +
+  scale_color_gradient(low = brewer.bugn(9)[1], high=brewer.bugn(9)[8]) +
+  scale_size_continuous(limits = c(0, 100), 
+                        breaks = c(0, 25, 50, 75, 100),
+                        labels=c(0,"",50,"",100)) +
+  guides(size=guide_legend(override.aes=list(shape=21, 
+                                             colour="black", 
+                                             fill="#adb5bd"),
+                                             title="% of exp. cells",
+                                             label.position="bottom",
+                                             title.position="top",
+                                             title.hjust=0.5
+                                             ))
+
+p2$guides$colour$title <- "Mean Expression"
+p2$guides$colour$title.position <- "top"
+p2$guides$colour$title.hjust <- 0.5
+suppressWarnings(print(p2))
+
+```
+
+:::
+
+::: {.panel}
+#### Macrophage {.panel-name}
+
+```{r fig.width=10,fig.height=15}
+s <- subset(seu, SCT_snn_res.3 %in% c("42","17","43","52","6","8","23","37","41","54",
+                                      "53","50","25"),invert=TRUE)
+s$SCT_snn_res.3 <- fct_drop(s$SCT_snn_res.3)
+
+Wong.macro.genes <- c("CD14","FCGR3A","IL1B","S100A12","MARCKS",
+                      "F13A1","MAF","FOLR2","CCR2","VCAN",
+                      "PLA2G7","SPP1",
+                      "CCL2","CCL8","CXCL9","ISG15","GBP4","GBP5","IDO1","GCH1",
+                      "ITGAM","FCGR1A","CSF1R",
+                      "C1QA","FABP4","CD163","MARCO","GPD1","PCOLCE2","MME","SCD",
+                      "MT1X","MT1G","MT1F","IFI27","CCL18","APOC2","ABCA1","CD36","LAMP1")
+p2 <- DotPlot(s,
+        features = Wong.macro.genes,
+        group.by = "SCT_snn_res.3",
+        col.max = 2,
+        col.min = 0,
+        dot.scale = 5
+        ) + #coord_flip() +
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  FontSize(y.text = 10, x.text = 8) + 
+  labs(y = element_blank(), x = element_blank()) + 
+  theme(text=element_text(family="Ariel"),
+        axis.text.x = element_text(size=10,
+                                   face="italic",
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        axis.text.y = element_text(size=10),
+        legend.direction="horizontal",
+        legend.position="bottom",
+        legend.justification = "right",
+        legend.box="vertical",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8,family = "Arial"),
+        ) +
+  scale_color_gradient(low = brewer.bugn(9)[1], high=brewer.bugn(9)[8]) +
+  scale_size_continuous(limits = c(0, 100), 
+                        breaks = c(0, 25, 50, 75, 100),
+                        labels=c(0,"",50,"",100)) +
+  guides(size=guide_legend(override.aes=list(shape=21, 
+                                             colour="black", 
+                                             fill="#adb5bd"),
+                                             title="% of exp. cells",
+                                             label.position="bottom",
+                                             title.position="top",
+                                             title.hjust=0.5
+                                             ))
+
+p2$guides$colour$title <- "Mean Expression"
+p2$guides$colour$title.position <- "top"
+p2$guides$colour$title.hjust <- 0.5
+suppressWarnings(print(p2))
+
+```
+
+:::
+
+:::::
+
+## 4.2 Check predictive score
+::::: {.panelset}
+
+::: {.panel}
+
+### Azimuth {.panel-name}
+```{r fig.width=16,fig.height=12}
+# Plot Azimuth predictive score
+seu@meta.data %>%
+  ggplot(aes(y = predicted.ann_level_3.score,
+             x = predicted.ann_level_3,
+             fill = predicted.ann_level_3)) +
+  facet_wrap(~SCT_snn_res.3, ncol = 6) +
+  geom_violin(scale = "width") +
+  scale_fill_manual(values = colours) +
+  theme(text = element_text(size = 8),
+        axis.text.x = element_text(angle = 90,
+                            vjust = 0.5,
+                            hjust = 1))
+```
+
+:::
+
+::: {.panel}
+
+### Wong broad {.panel-name}
+```{r fig.width=16,fig.height=12}
+# Plot Azimuth predictive score
+seu@meta.data %>%
+  ggplot(aes(y = predicted.celltype.score,
+             x = predicted.celltype,
+             fill = predicted.celltype)) +
+  facet_wrap(~SCT_snn_res.3, ncol = 6) +
+  geom_violin(scale = "width") +
+  scale_fill_manual(values = colours) +
+  theme(text = element_text(size = 8),
+        axis.text.x = element_text(angle = 90,
+                            vjust = 0.5,
+                            hjust = 1))
+```
+
+:::
+
+:::::
+
+# 5. Manual annotation
+## 5.1 Annotation
+<!-- read from prevoius file -->
+<!-- ```{r} -->
+<!-- # 1) Read annotation file (all samples) -->
+<!-- ann_path <- "/group/canc2/anson/working/cf-eti-bal/data/annotation/bal_annotations.csv" -->
+<!-- ann_lv1  <- read_csv(ann_path, show_col_types = FALSE) -->
+
+<!-- cells_seu <- rownames(seu@meta.data) -->
+
+<!-- # Create a named vector: names = cell barcodes, values = subtype -->
+<!-- ann_lv1_vec <- ann_lv1 %>% -->
+<!--   distinct(cell, .keep_all = TRUE) %>% -->
+<!--   filter(cell %in% cells_seu) %>% -->
+<!--   { setNames(as.character(.$subtype), .$cell) } -->
+
+<!-- # AddMetaData will match by names(ann_lv1_vec) to colnames(seu) -->
+<!-- seu <- Seurat::AddMetaData(seu, metadata = ann_lv1_vec, col.name = "ann_lv1") -->
+
+<!-- # check -->
+<!-- table(is.na(seu$ann_lv1), useNA = "ifany") -->
+<!-- head(seu$ann_lv1) -->
+
+<!-- ``` -->
+
+### 5.1.1 Level 1
+```{r}
+# Use Azimuth result to annotate mast cells
+draft1 <- factor(
+      case_when(
+        seu$predicted.celltype == "Mast" ~ "Mast"
+        ))
+
+seu <- AddMetaData(seu, draft1, col.name = "draft1")
+
+# v250321
+draft2 <- setNames(c("AM","AM","AM","AM","AM", # 1-5
+                     "T/NK","AM","T/NK","AM","AM", # 6-10
+                     "AM","AM","AM","RecM","AM", # 11-15
+                     "RecM","B","AM","AM","RecM", # 16-20
+                     "AM","AM","T/NK","AM","cDC", # 21-25
+                     "AM","RecM","AM","AM","AM", # 26-30
+                     "AM","AM","AM","AM","AM", # 31-35
+                     "Prolif.M","T/NK","RecM","AM","AM", # 36-40
+                     "T/NK","pDC","Epithelial","AM","Prolif.M", # 41-45
+                     "RecM","AM","AM","RecM","cDC", # 46-50
+                     "AM","Epithelial","cDC","T/NK" # 51-54
+                     ), levels(seu$SCT_snn_res.3))
+
+draft2 <- factor(setNames(draft2[seu$SCT_snn_res.3],colnames(seu)))
+
+seu <- AddMetaData(seu, draft2, col.name = "draft2")
+
+# coalesce two draft columns
+seu@meta.data %>%
+  mutate(ann_lv1=coalesce(draft1,draft2)) -> seu@meta.data
+
+# reorder levels
+seu$ann_lv1 <- factor(seu$ann_lv1,
+                       levels=c("AM","RecM","Prolif.M","cDC","pDC",
+                                "T/NK","B","Mast","Epithelial"))
+
+seu$draft1 <- NULL
+seu$draft2 <- NULL
+
+# Number of cells per celltype
+summary(seu$ann_lv1)
+```
+
+### 5.1.2 Level 2
+```{r}
+# Use Azimuth result to annotate mast cells
+draft1 <- factor(
+      case_when(
+        seu$predicted.celltype == "Mast" ~ "Mast"
+        ))
+
+seu <- AddMetaData(seu, draft1, col.name = "draft1")
+
+# v251215
+draft2 <- setNames(c("AM-IFI27hi","AM","AM-CCL","AM","AM-IFI27hi", # 1-5
+                     "T/NK","AM","T/NK","AM-lipid","AM", # 6-10
+                     "AM","AM","AM","IM","AM", # 11-15
+                     "CD14.mono","B","AM","AM","MDM-PLA2G7hi", # 16-20
+                     "AM","AM","T/NK","AM","cDC", # 21-25
+                     "AM-IFI27hi","MDM-FABP4lo","AM","AM","AM-IFI27hi", # 26-30
+                     "AM-MT","AM-IFI27hi","AM","AM","AM", # 31-35
+                     "Prolif.M","T/NK","MDM-IV","AM","AM", # 36-40
+                     "T/NK","pDC","Epithelial","AM","Prolif.M", # 41-45
+                     "MDM-inflam","AM","AM-IFI27hi","IM","DC.migratory", # 46-50
+                     "AM","Epithelial","cDC","T/NK" # 51-54
+                     ), levels(seu$SCT_snn_res.3))
+
+draft2 <- factor(setNames(draft2[seu$SCT_snn_res.3],colnames(seu)))
+
+seu <- AddMetaData(seu, draft2, col.name = "draft2")
+
+# coalesce two draft columns
+seu@meta.data %>%
+  mutate(ann_lv2=coalesce(draft1,draft2)) -> seu@meta.data
+
+
+# BAL cell names (must be length 110809)
+cells <- rownames(seu@meta.data)  # same as colnames(seu)
+
+t_ann <- readr::read_csv(
+  here::here("data","annotation","balTcell_subtype_annotations.csv"),
+  show_col_types = FALSE
+) %>%
+  distinct(cell, .keep_all = TRUE) %>%
+  mutate(subtype = as.character(subtype))  # keep "Ambiguous" as-is
+
+t_map <- setNames(t_ann$subtype, t_ann$cell)
+
+ann_lv2_old <- as.character(seu$ann_lv2)
+
+t_override <- dplyr::case_when(
+  seu$ann_lv1 == "T/NK" & cells %in% names(t_map) ~ unname(t_map[cells]),
+  seu$ann_lv1 == "T/NK" & !(cells %in% names(t_map)) ~ "Ambiguous",
+  TRUE ~ NA_character_
+)
+
+seu$ann_lv2 <- dplyr::coalesce(t_override, ann_lv2_old)
+
+# quick checks
+table(seu$ann_lv1 == "T/NK", is.na(t_override))
+table(seu$ann_lv2[seu$ann_lv1 == "T/NK"], useNA = "ifany")
+
+# Factorize (include Ambiguous level)
+seu$ann_lv2 <- factor(
+  seu$ann_lv2,
+  levels = c(
+    "AM","AM-CCL","AM-MT","AM-lipid","AM-IFI27hi",
+    "CD14.mono","MDM-IV","MDM-FABP4lo","MDM-inflam","MDM-PLA2G7hi","IM","Prolif.M",
+    "cDC","pDC","DC.migratory","Mast",
+    "CD4T.naive","CD4T.memory","CD4T.TRM","Treg",
+    "CD8T.EM","CD8T.TRM",
+    "NKT","NK","ILC","Prolif.T/NK",
+    "B","Epithelial","Ambiguous"
+  )
+)
+
+summary(seu$ann_lv2)
+
+```
+
+### 5.1.3 Refine ann_lv1
+```{r}
+## Refine ann_lv1 for cells currently annotated as T/NK using ann_lv2 subtypes
+## Rules:
+## - ann_lv2 == "NK"            -> ann_lv1 = "NK"
+## - ann_lv2 == "Treg"          -> ann_lv1 = "Treg"
+## - ann_lv2 starts with "CD4"  -> ann_lv1 = "CD4T"
+## - ann_lv2 starts with "CD8"  -> ann_lv1 = "CD8T"
+## - ann_lv2 == "Ambiguous"     -> ann_lv1 = "Ambiguous"
+## - otherwise keep existing ann_lv1
+
+seu@meta.data <- seu@meta.data %>%
+  dplyr::mutate(
+    ann_lv1 = dplyr::case_when(
+      ann_lv1 == "T/NK" & ann_lv2 == "NK" ~ "NK",
+      ann_lv1 == "T/NK" & ann_lv2 == "Treg" ~ "Treg",
+      ann_lv1 == "T/NK" & ann_lv2 == "NKT" ~ "NKT",
+      ann_lv1 == "T/NK" & ann_lv2 == "ILC" ~ "ILC",
+      ann_lv1 == "T/NK" & ann_lv2 == "Prolif.T/NK" ~ "Prolif.T/NK",
+      ann_lv1 == "T/NK" & stringr::str_starts(as.character(ann_lv2), "CD4") ~ "CD4T",
+      ann_lv1 == "T/NK" & stringr::str_starts(as.character(ann_lv2), "CD8") ~ "CD8T",
+      ann_lv1 == "T/NK" & ann_lv2 == "Ambiguous" ~ "Ambiguous",
+      TRUE ~ as.character(ann_lv1)
+    ),
+    ann_lv1 = factor(ann_lv1)
+  )
+
+# Quick check: remaining un-resolved T/NK (if any)
+table(seu$ann_lv1, useNA = "ifany")
+
+# Optional: set a preferred order for ann_lv1 levels (edit as you like)
+seu$ann_lv1 <- factor(
+  seu$ann_lv1,
+  levels = c("AM","RecM","Prolif.M","cDC","pDC",
+             "CD4T","CD8T","Treg","NKT","NK","ILC","Prolif.T/NK",
+             "B","Mast","Epithelial","Ambiguous")
+)
+
+```
+
+## 5.2 UMAP
+### 5.2.1 ann_lv1
+```{r fig.width=5,fig.height=4}
+
+Annotation.colours <- setNames(c("#DD927E", # AM
+                                 "#C5A07A", # RecM
+                                 "#7f5539", # Prolif M
+                                 "#979EC1", # cDC
+                                 "#DB98AE", # pDC
+                                 #"#BE93C6", # Migratory.DC
+                                 "#a3b18a", # CD4T
+                                 "#588157", # CD8T
+                                 "#054a91", # Treg
+                                 "#432818", # NKT
+                                 "#BE93C6", # NK
+                                 "#e27396", # ILC
+                                 "#ff6700", # Prolif T/NK
+                                 "#f6bd60", # B
+                                 "#5a189a", # Mast
+                                 "#b23a48", # Epithelial
+                                 "#A5AA99" # Ambiguous
+                                 ),
+               levels(seu$ann_lv1))
+
+DimPlot(seu,
+        reduction = 'umap',
+        pt.size = 0.1,
+        label.box = FALSE,
+        label = FALSE,
+        shuffle = FALSE,
+        raster=FALSE,
+        repel = TRUE,
+        label.size = 2,
+        #split.by = "Condition",
+        group.by = "ann_lv1") + #NoLegend() +
+  scale_color_manual(values=Annotation.colours) +
+  labs(x = NULL, y = NULL) +
+  guides(x = "none", y = "none") +
+  theme(#plot.title = element_blank(),
+        text=element_text(family="Arial"),
+        axis.text = element_text(size=8),
+        axis.title.y=element_text(vjust=-1,
+                                  size=10),
+        axis.title.x=element_text(#vjust=10,
+                                  size=10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(face = "bold", vjust=2, size=12)) -> p1
+
+suppressWarnings(p1)
+
+```
+
+### 5.2.2 ann_lv2
+```{r fig.width=6.5,fig.height=4}
+
+Annotation2.colours <- c("#83c5be", # CD4.T
+                                 "#f5cac3", # CD8.T
+                                 "#BC80BD", # NK.CD56hi
+                                 "#E5C494", # NK.CD56lo
+                                 "#C16610", # Prolif.lymph
+                                 "#B3DE69", # ILC
+                                 "#ffbe0b", # CD14.mono
+                                 "#1F78B4", # CD16.mono
+                                 "#66A61E", # cDC
+                                 "#7400b8", # pDC
+                                 "#748cab", # B
+                                 "#1B9E77", # Plasmablast
+                                 "#E7298A" # HSPC
+                                 ,
+                              carto_pal(n=12,"Pastel")[1:11],
+                              carto_pal(n=12,"Antique")[1],carto_pal(n=12,"Antique")[3:5],
+                              carto_pal(n=12,"Pastel")[12])
+
+DimPlot(seu,
+        reduction = 'umap',
+        pt.size = 0.1,
+        label.box = FALSE,
+        label = TRUE,
+        shuffle = FALSE,
+        raster=FALSE,
+        repel = TRUE,
+        label.size = 2,
+        #split.by = "Condition",
+        group.by = "ann_lv2") + #NoLegend() +
+  scale_color_manual(values=Annotation2.colours) +
+  labs(x = NULL, y = NULL, title="BAL") +
+  guides(x = "none", y = "none") +
+  theme(#plot.title = element_blank(),
+        axis.text = element_text(size=8),
+        axis.title.y=element_text(vjust=-1,
+                                  size=10),
+        axis.title.x=element_text(#vjust=10,
+                                  size=10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(face = "bold", vjust=2, size=12)) -> p2
+
+suppressWarnings(p2)
+
+```
+
+split
+```{r fig.width=14.5,fig.height=4}
+
+DimPlot(seu,
+        reduction = 'umap',
+        pt.size = 0.1,
+        label.box = FALSE,
+        label = TRUE,
+        shuffle = TRUE,
+        raster=FALSE,
+        repel = TRUE,
+        label.size = 2,
+        split.by = "Condition2",
+        group.by = "ann_lv2") + #NoLegend() +
+  scale_color_manual(values=Annotation2.colours) +
+  labs(x = NULL, y = NULL, title=NULL) +
+  guides(x = "none", y = "none") +
+  theme(#plot.title.position = "panel",
+        axis.text = element_text(size=8),
+        axis.title.y=element_text(vjust=-1,
+                                  size=10),
+        axis.title.x=element_text(#vjust=10,
+                                  size=10),
+        legend.text = element_text(size = 10),
+        strip.text.x = element_text(face = "bold", vjust=2, size=12)) -> p2.5
+
+suppressWarnings(p2.5)
+
+```
+
+## 5.3 Cell proportion [ann_lv1]
+### 5.3.1 Grouped by disease
+::::: {.panelset}
+
+::: {.panel}
+##### All cells {.panel-name}
+```{r fig.width=3,fig.height=3.5}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=seu$ann_lv2,
+                             sample=seu$Condition2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p3 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.title = element_text(size=12),
+        axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=10,
+                                   colour = "black"),
+        axis.text.y = element_text(size=10,
+                                   colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "BAL cell-type proportion", fill="Condition", x=NULL) + #NoLegend() +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation2.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank()) + NoLegend()
+p3
+
+```
+:::
+
+::: {.panel}
+##### Myeloid {.panel-name}
+```{r fig.width=3,fig.height=4}
+# subset object
+md <- seu@meta.data
+cells.keep <- rownames(md)[md$ann_lv1 %in% c("AM","RecM","Prolif.M","cDC","pDC","Mast")]
+s.mye <- subset(seu, cells = cells.keep)
+s.mye$ann_lv1 <- fct_drop(s.mye$ann_lv1)
+s.mye$ann_lv2 <- fct_drop(s.mye$ann_lv2)
+
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.mye$ann_lv1,
+                             sample=s.mye$Condition2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=8,
+                                   colour = "black"),
+        axis.text.y = element_text(size=8,
+                                   colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+
+::: {.panel}
+##### T_NK {.panel-name}
+```{r fig.width=3,fig.height=4}
+# subset object
+cells.keep <- rownames(md)[md$ann_lv1 %in% c("CD4T","CD8T","Treg","NKT","NK","ILC","Prolif.T/NK","B")]
+s.Tlym <- subset(seu, cells = cells.keep)
+s.Tlym$ann_lv1 <- fct_drop(s.Tlym$ann_lv1)
+s.Tlym$ann_lv2 <- fct_drop(s.Tlym$ann_lv2)
+
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.Tlym$ann_lv1,
+                             sample=s.Tlym$Condition2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=8,
+                                   colour = "black"),
+        axis.text.y = element_text(size=8,
+                                   colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+:::::
+
+### 5.3.2 Grouped by sample
+::::: {.panelset}
+
+::: {.panel}
+##### All cells {.panel-name}
+```{r fig.width=8,fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=seu$ann_lv1,
+                             sample=seu$ID2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=10,
+                                   colour = "black"),
+        axis.text.y = element_text(size=10,
+                                   colour = "black"),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  scale_x_discrete(labels=c(paste0("C-",1:5),paste0("CFN-",1:6),paste0("CFB-",1:6))) +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+
+::: {.panel}
+##### Myeloid {.panel-name}
+```{r fig.width=8,fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.mye$ann_lv1,
+                             sample=s.mye$ID2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=8,
+                                   colour = "black"),
+        axis.text.y = element_text(size=8,
+                                   colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+
+::: {.panel}
+##### Lymphocyte {.panel-name}
+```{r fig.width=8,fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.Tlym$ann_lv1,
+                             sample=s.Tlym$ID2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=8,
+                                   colour = "black"),
+        axis.text.y = element_text(size=8,
+                                   colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+:::::
+
+
+
+## 5.4 Cell proportion [ann_lv2]
+### 5.4.1 Grouped by disease
+::::: {.panelset}
+
+::: {.panel}
+##### All cells {.panel-name}
+```{r fig.width=5,fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=seu$ann_lv2,
+                             sample=seu$Condition2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=8,
+                                   colour = "black"),
+        axis.text.y = element_text(size=8,
+                                   colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation2.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+
+::: {.panel}
+##### Myeloid {.panel-name}
+```{r fig.width=4,fig.height=4}
+s.mye$ann_lv2 <- fct_drop(s.mye$ann_lv2)
+
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.mye$ann_lv2,
+                             sample=s.mye$Condition2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=8,
+                                   colour = "black"),
+        axis.text.y = element_text(size=8,
+                                   colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation2.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+
+::: {.panel}
+##### T_NK {.panel-name}
+```{r fig.width=3,fig.height=4}
+s.Tlym$ann_lv2 <- fct_drop(s.Tlym$ann_lv2)
+
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.Tlym$ann_lv2,
+                             sample=s.Tlym$Condition2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=8,
+                                   colour = "black"),
+        axis.text.y = element_text(size=8,
+                                   colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation2.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+:::::
+
+### 5.3.2 Grouped by sample
+::::: {.panelset}
+
+::: {.panel}
+##### All cells {.panel-name}
+```{r fig.width=9,fig.height=3}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=seu$ann_lv2,
+                             sample=seu$ID2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=10,
+                                   colour = "black"),
+        axis.text.y = element_text(size=10,
+                                   colour = "black"),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  scale_x_discrete(labels=c(paste0("C-",1:6),paste0("CFN-",1:6),paste0("CFB-",1:6))) +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation2.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+
+::: {.panel}
+##### Myeloid {.panel-name}
+```{r fig.width=8,fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.mye$ann_lv2,
+                             sample=s.mye$ID2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=8,
+                                   colour = "black"),
+        axis.text.y = element_text(size=8,
+                                   colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation2.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+
+::: {.panel}
+##### Lymphocyte {.panel-name}
+```{r fig.width=8,fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.Tlym$ann_lv2,
+                             sample=s.Tlym$ID2)
+
+props$Proportions %>%
+  data.frame() -> df
+
+# stacked bar plot of cell proportion per sampleID
+p2 <- ggplot(df, aes(x = sample, y = Freq, fill = clusters)) +
+  geom_bar(stat = "identity", position="stack") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45,
+                                   vjust = 1,
+                                   hjust = 1,
+                                   size=8,
+                                   colour = "black"),
+        axis.text.y = element_text(size=8,
+                                   colour = "black"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(face="bold", size=12)) +
+  labs( y = "Proportion", fill="Condition", x=NULL) + #NoLegend() +
+  guides(fill = guide_legend(keyheight=0.8,
+                             keywidth=0.8)) +
+  scale_fill_manual(values = Annotation2.colours) +
+  theme(legend.text.align = 0, legend.title = element_blank())
+p2
+
+```
+:::
+:::::
+
+# 5.4 Cell type proportion changes
+### 5.4.1 ann_lv1
+::::: {.panelset}
+
+::: {.panel}
+#### All cells {.panel-name}
+```{r fig.width=10, fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=seu$ann_lv1,
+                             sample=seu$sampleID)
+
+n <- nlevels(seu$ann_lv1)
+
+props$Proportions %>%
+  data.frame %>%
+  dplyr::mutate(Condition = c(rep("C",n*6),rep("CF",n*12)),
+                Condition2 = c(rep("C",n*6),rep("CFN",n*6),rep("CFB",n*6))) -> df
+
+df$Condition <- factor(df$Condition, levels=c("C","CF"))
+df$Condition2 <- factor(df$Condition2, levels=c("C","CFB","CFN"))
+
+# Wilcox test on pairwise comparisons of control, CF mild and CF severe --------
+stat.test <- df %>%
+  group_by(clusters) %>%
+  wilcox_test(
+    ref.group = "C",
+    Freq ~ Condition2,
+    p.adjust.method = "BH"
+  ) %>%
+  filter(p.adj < 0.1)
+
+
+stat.test <- stat.test %>%
+  add_xy_position(x = "clusters", dodge = 0.8)
+
+# box plot
+dodge_width <- 0.8  # adjust this value to widen spacing between groups within clusters
+
+p <- ggplot(df, aes(x = clusters, y = Freq, color = Condition2)) +
+  geom_boxplot(
+    fill = NA,
+    outlier.shape = NA,
+    position = position_dodge(width = dodge_width)
+  ) +
+  geom_point(
+    position = position_dodge(width = dodge_width),
+    size = 2, alpha = 0.8
+  ) +
+  stat_pvalue_manual(
+    stat.test,
+    label = "p.adj.signif",
+    tip.length = 0.01,
+    bracket.size = 0.4,
+    hide.ns = TRUE
+  ) +
+  scale_color_manual(values = Condition2.colours) +
+  labs(
+    y = "Cell proportion"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_blank(),
+    axis.text.x = element_text(angle = 40, hjust = 1, size = 10, colour = "black"),
+    axis.text.y = element_text(size = 12, colour = "black"),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = c(0.75, 0.99),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key.size = unit(1, "lines"),
+    legend.text = element_text(size = 12)
+  )
+
+p
+
+```
+
+:::
+
+::: {.panel}
+#### Myeloid {.panel-name}
+```{r fig.width=5, fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.mye$ann_lv1,
+                             sample=s.mye$ID2)
+                             
+n <- length(levels(s.mye$ann_lv1))
+props$Proportions %>%
+  data.frame %>%
+  dplyr::mutate(Condition = c(rep("C",6*n),rep("CF",12*n)),
+                Condition2 = c(rep("C",6*n),rep("CFN",6*n),rep("CFB",6*n))) -> df
+
+df$Condition <- factor(df$Condition, levels=c("C","CF"))
+df$Condition2 <- factor(df$Condition2, levels=c("C","CFB","CFN"))
+
+# Wilcox test on pairwise comparisons of control, CF mild and CF severe --------
+stat.test <- df %>%
+  group_by(clusters) %>%
+  wilcox_test(
+    ref.group = "C",
+    Freq ~ Condition2,
+    p.adjust.method = "BH"
+  ) %>%
+  filter(p.adj < 0.1)
+
+
+stat.test <- stat.test %>%
+  add_xy_position(x = "clusters", dodge = 0.8)
+
+# box plot
+dodge_width <- 0.8  # adjust this value to widen spacing between groups within clusters
+
+p3 <- ggplot(df, aes(x = clusters, y = Freq, color = Condition2)) +
+  geom_boxplot(
+    fill = NA,
+    outlier.shape = NA,
+    position = position_dodge(width = dodge_width)
+  ) +
+  geom_point(
+    position = position_dodge(width = dodge_width),
+    size = 2, alpha = 0.8
+  ) +
+  stat_pvalue_manual(
+    stat.test,
+    label = "p.adj.signif",
+    tip.length = 0.01,
+    bracket.size = 0.4,
+    hide.ns = TRUE
+  ) +
+  scale_color_manual(values = Condition2.colours) +
+  labs(
+    y = "Cell proportion"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_blank(),
+    axis.text.x = element_text(angle = 40, hjust = 1, size = 12, colour = "black"),
+    axis.text.y = element_text(size = 12, colour = "black"),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = c(0.75, 0.99),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key.size = unit(1, "lines"),
+    legend.text = element_text(size = 12)
+  )
+
+p3
+
+```
+
+:::
+
+::: {.panel}
+#### Lymphoid {.panel-name}
+```{r fig.width=5, fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.Tlym$ann_lv1,
+                             sample=s.Tlym$ID2)
+                             
+n <- length(levels(s.Tlym$ann_lv1))
+
+props$Proportions %>%
+  data.frame %>%
+  dplyr::mutate(Condition = c(rep("C",6*n),rep("CF",12*n)),
+                Condition2 = c(rep("C",6*n),rep("CFN",6*n),rep("CFB",6*n))) -> df
+
+df$Condition <- factor(df$Condition, levels=c("C","CF"))
+df$Condition2 <- factor(df$Condition2, levels=c("C","CFB","CFN"))
+
+# Wilcox test on pairwise comparisons of control, CF mild and CF severe --------
+stat.test <- df %>%
+  group_by(clusters) %>%
+  wilcox_test(
+    ref.group = "C",
+    Freq ~ Condition2,
+    p.adjust.method = "BH"
+  ) %>%
+  filter(p.adj < 0.1)
+
+
+stat.test <- stat.test %>%
+  add_xy_position(x = "clusters", dodge = 0.8)
+
+# box plot
+dodge_width <- 0.8  # adjust this value to widen spacing between groups within clusters
+
+p4 <- ggplot(df, aes(x = clusters, y = Freq, color = Condition2)) +
+  geom_boxplot(
+    fill = NA,
+    outlier.shape = NA,
+    position = position_dodge(width = dodge_width)
+  ) +
+  geom_point(
+    position = position_dodge(width = dodge_width),
+    size = 2, alpha = 0.8
+  ) +
+  stat_pvalue_manual(
+    stat.test,
+    label = "p.adj.signif",
+    tip.length = 0.01,
+    bracket.size = 0.4,
+    hide.ns = TRUE
+  ) +
+  scale_color_manual(values = Condition2.colours) +
+  labs(
+    y = "Cell proportion"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_blank(),
+    axis.text.x = element_text(angle = 40, hjust = 1, size = 12, colour = "black"),
+    axis.text.y = element_text(size = 12, colour = "black"),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = c(0.75, 0.99),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key.size = unit(1, "lines"),
+    legend.text = element_text(size = 12)
+  ) 
+
+p4
+
+```
+
+:::
+:::::
+
+
+### 5.4.2 ann_lv2
+::::: {.panelset}
+
+::: {.panel}
+#### All cells {.panel-name}
+```{r fig.width=10, fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=seu$ann_lv2,
+                             sample=seu$sampleID)
+
+n <- nlevels(seu$ann_lv2)
+
+props$Proportions %>%
+  data.frame %>%
+  dplyr::mutate(Condition = c(rep("C",n*6),rep("CF",n*12)),
+                Condition2 = c(rep("C",n*6),rep("CFN",n*6),rep("CFB",n*6))) -> df
+
+df$Condition <- factor(df$Condition, levels=c("C","CF"))
+df$Condition2 <- factor(df$Condition2, levels=c("C","CFB","CFN"))
+
+# Wilcox test on pairwise comparisons of control, CF mild and CF severe --------
+stat.test <- df %>%
+  group_by(clusters) %>%
+  wilcox_test(
+    ref.group = "C",
+    Freq ~ Condition2,
+    p.adjust.method = "BH"
+  ) %>%
+  filter(p.adj < 0.1)
+
+
+stat.test <- stat.test %>%
+  add_xy_position(x = "clusters", dodge = 0.8)
+
+# box plot
+dodge_width <- 0.8  # adjust this value to widen spacing between groups within clusters
+
+p <- ggplot(df, aes(x = clusters, y = Freq, color = Condition2)) +
+  geom_boxplot(
+    fill = NA,
+    outlier.shape = NA,
+    position = position_dodge(width = dodge_width)
+  ) +
+  geom_point(
+    position = position_dodge(width = dodge_width),
+    size = 2, alpha = 0.8
+  ) +
+  stat_pvalue_manual(
+    stat.test,
+    label = "p.adj.signif",
+    tip.length = 0.01,
+    bracket.size = 0.4,
+    hide.ns = TRUE
+  ) +
+  scale_color_manual(values = Condition2.colours) +
+  labs(
+    y = "Cell proportion"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_blank(),
+    axis.text.x = element_text(angle = 40, hjust = 1, size = 10, colour = "black"),
+    axis.text.y = element_text(size = 12, colour = "black"),
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = c(0.75, 0.99),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key.size = unit(1, "lines"),
+    legend.text = element_text(size = 12)
+  )
+
+p
+
+```
+
+:::
+
+::: {.panel}
+#### Myeloid {.panel-name}
+```{r fig.width=6, fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.mye$ann_lv2,
+                             sample=s.mye$ID2)
+                             
+n <- length(levels(s.mye$ann_lv2))
+props$Proportions %>%
+  data.frame %>%
+  dplyr::mutate(Condition = c(rep("C",6*n),rep("CF",12*n)),
+                Condition2 = c(rep("C",6*n),rep("CFN",6*n),rep("CFB",6*n))) -> df
+
+df$Condition <- factor(df$Condition, levels=c("C","CF"))
+df$Condition2 <- factor(df$Condition2, levels=c("C","CFB","CFN"))
+
+# Wilcox test on pairwise comparisons of control, CF mild and CF severe --------
+stat.test <- df %>%
+  group_by(clusters) %>%
+  wilcox_test(
+    ref.group = "C",
+    Freq ~ Condition2,
+    p.adjust.method = "BH"
+  ) %>%
+  dplyr::filter(p.adj < 0.1)
+
+
+stat.test <- stat.test %>%
+  add_xy_position(x = "clusters", dodge = 0.8)
+
+# box plot
+dodge_width <- 0.8  # adjust this value to widen spacing between groups within clusters
+
+p5 <- ggplot(df, aes(x = clusters, y = Freq, color = Condition2)) +
+  geom_boxplot(
+    fill = NA,
+    outlier.shape = NA,
+    position = position_dodge(width = dodge_width)
+  ) +
+  geom_point(
+    position = position_dodge(width = dodge_width),
+    size = 2, alpha = 0.8
+  ) +
+  stat_pvalue_manual(
+    stat.test,
+    label = "p.adj.signif",
+    tip.length = 0.01,
+    bracket.size = 0.4,
+    hide.ns = TRUE
+  ) +
+  scale_color_manual(values = Condition2.colours) +
+  labs(
+    y = "Proportion", x="BAL myeloid cell type"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_blank(),
+    axis.text.x = element_text(angle = 40, hjust = 1, size = 10, colour = "black"),
+    axis.text.y = element_text(size = 10, colour = "black"),
+    #axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = c(0.8, 0.99),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key.size = unit(1, "lines"),
+    legend.text = element_text(size = 10)
+  )
+
+p5
+
+```
+
+:::
+
+::: {.panel}
+#### Lymphoid {.panel-name}
+```{r fig.width=6, fig.height=4}
+# calculate the proportion of cells --------------------------------------------
+props <- getTransformedProps(clusters=s.Tlym$ann_lv2,
+                             sample=s.Tlym$ID2)
+                             
+n <- length(levels(s.Tlym$ann_lv2))
+
+props$Proportions %>%
+  data.frame %>%
+  dplyr::mutate(Condition = c(rep("C",6*n),rep("CF",12*n)),
+                Condition2 = c(rep("C",6*n),rep("CFN",6*n),rep("CFB",6*n))) -> df
+
+df$Condition <- factor(df$Condition, levels=c("C","CF"))
+df$Condition2 <- factor(df$Condition2, levels=c("C","CFB","CFN"))
+
+# Wilcox test on pairwise comparisons of control, CF mild and CF severe --------
+stat.test <- df %>%
+  group_by(clusters) %>%
+  wilcox_test(
+    ref.group = "C",
+    Freq ~ Condition2,
+    p.adjust.method = "BH"
+  ) %>%
+  filter(p.adj < 0.1)
+
+
+stat.test <- stat.test %>%
+  add_xy_position(x = "clusters", dodge = 0.8)
+
+# box plot
+dodge_width <- 0.8  # adjust this value to widen spacing between groups within clusters
+
+p6 <- ggplot(df, aes(x = clusters, y = Freq, color = Condition2)) +
+  geom_boxplot(
+    fill = NA,
+    outlier.shape = NA,
+    position = position_dodge(width = dodge_width)
+  ) +
+  geom_point(
+    position = position_dodge(width = dodge_width),
+    size = 2, alpha = 0.8
+  ) +
+  stat_pvalue_manual(
+    stat.test,
+    label = "p.adj.signif",
+    tip.length = 0.01,
+    bracket.size = 0.4,
+    hide.ns = TRUE
+  ) +
+  scale_color_manual(values = Condition2.colours) +
+  labs(
+    y = "Proportion", x="BAL lymphoid cell type"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    plot.title = element_blank(),
+    axis.text.x = element_text(angle = 40, hjust = 1, size = 10, colour = "black"),
+    axis.text.y = element_text(size = 10, colour = "black"),
+    #axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    legend.position = c(0.8, 0.99),
+    legend.justification = c(0, 1),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key.size = unit(1, "lines"),
+    legend.text = element_text(size = 10)
+  )
+
+p6
+
+```
+
+:::
+:::::
+
+### 5.2.4 Plots of selected markers
+```{r fig.width=10,fig.height=4}
+# rearrange levels
+seu$ann_lv1 <- factor(seu$ann_lv1,levels=rev(levels(seu$ann_lv1)))
+
+Wong.genes <- c("FABP4","GPD1","PCOLCE2","MME","SCD", # AM
+                "VCAN","FCN1","CCL2", # RecM
+                "PCLAF","MKI67","TOP2A", # Prolif.M
+                "CLEC10A","CD1C","LGALS2", # cDC
+                "JCHAIN","PTPRS","CLEC4C", # pDC
+                "CD3D","CD3G","CD40LG","CD8A","FOXP3", # CD4.T
+                "NCAM1","KLRC1", # NK
+                "MS4A1","EBF1","PAX5", # B
+                "CPA3","TPSAB1","TPSB2", # mast
+                "CHST9","MUC16","MUC4") # Epithelial
+
+# horizontal
+p2 <- DotPlot(seu,
+        features = Wong.genes,
+        group.by = "ann_lv1",
+        col.max = 2,
+        col.min = 0,
+        dot.scale = 6
+        ) + #coord_flip() +
+  geom_point(aes(size=pct.exp), shape = 21, colour="transparent", stroke=0.5) +
+  FontSize(y.text = 10, x.text = 8) +
+  labs(y = element_blank(), x = element_blank()) +
+  theme(
+        axis.text.x = element_text(size=10,
+                                   face="italic",
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        axis.text.y = element_text(size=10),
+        legend.direction="vertical",
+        legend.position="right",
+        legend.justification = "right",
+        legend.box="vertical",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8,angle=90),
+        ) +
+  scale_color_gradient(low = brewer.reds(9)[1], high=brewer.reds(9)[8], labels=c("0","","1","","2")) +
+  #scale_y_discrete(labels = subtype.labels) +
+  scale_size_continuous(limits = c(0, 100),
+                        breaks = c(0, 25, 50, 75, 100),
+                        labels=c(0,"",50,"",100)) +
+  guides(
+    color = guide_colorbar(
+      title = "Mean Expression",
+      title.position = "left",   # << here
+      title.hjust = 0.5,
+      barwidth = 1,
+      barheight = 5
+    ),
+    size = guide_legend(
+      override.aes = list(shape=21, colour="black", fill="#adb5bd"),
+      title = "% of exp. cells",
+      label.position = "right",
+      title.position = "left",
+      title.hjust = 0.5
+    )
+  )
+
+# p2$guides$colour$title <- "Mean Expression"
+# p2$guides$colour$title.position <- "top"
+# p2$guides$colour$title.hjust <- 0.5
+seu$ann_lv1 <- factor(seu$ann_lv1,levels=rev(levels(seu$ann_lv1)))
+suppressWarnings(print(p2))
+
+```
+
+### 5.2.4 Plots of selected markers
+```{r fig.width=10,fig.height=15}
+# rearrange levels
+#seu$ann_lv2 <- factor(seu$ann_lv2,levels=rev(levels(seu$ann_lv2)))
+
+markers2 <- c("GPD1","RBP4","CD14","FABP4","CCL4L2","CCL20","MT1G","MT1F","MT1X", # AM
+              "CD36","NR1H3","IFI27","CCR2","FCN1",
+              "FOLR2","F13A1","RNASE1","VCAN","CCL2","IL1B","CD300E",
+              "CXCL9","CXCL10","CXCL11",
+              "PCLAF","MKI67","TOP2A", # Prolif.M
+              "CLEC10A","CD1C","LGALS2", # cDC
+              "JCHAIN","PTPRS","CLEC4C", # pDC
+              "CCR7","CCL22", #DC migratory
+              "CPA3","TPSAB1","TPSB2", # mast
+              "CD3D","CD3E","TRAC","TRDC","CD4","CD40LG","CD8A","CD8B",
+              "LEF1","ZNF683","IFNG","GZMK","GZMA","FOXP3","CTLA4","TIGIT",
+              "ITGA1","ITGAE","CD69",
+              "NCAM1","KLRF1","GNLY", # NK
+              "KIT","PCDH9", #ILC
+              "MS4A1","EBF1","PAX5", # B
+              "CHST9","MUC16","MUC4") # Epithelial
+
+# horizontal
+p4 <- DotPlot(seu,
+        features = rev(markers2),
+        group.by = "ann_lv2",
+        col.max = 2,
+        col.min = 0,
+        dot.scale = 6
+        ) + #coord_flip() +
+  geom_point(aes(size=pct.exp), shape = 21, colour="transparent", stroke=0.5) +
+  FontSize(y.text = 10, x.text = 8) +
+  labs(y = element_blank(), x = element_blank()) +
+  theme(
+        axis.text.x = element_text(size=10,
+                                   face="plain",
+                                   hjust = 1,vjust=1,angle=45),
+        axis.text.y = element_text(size=10,face="italic"),
+        legend.direction="vertical",
+        legend.position="right",
+        legend.justification = "right",
+        legend.box="vertical",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8,angle=90),
+        ) +
+  scale_color_gradient(low = brewer.reds(9)[1], high=brewer.reds(9)[8], labels=c("0","","1","","2")) +
+  #scale_y_discrete(labels = subtype.labels) +
+  scale_size_continuous(limits = c(0, 100),
+                        breaks = c(0, 25, 50, 75, 100),
+                        labels=c(0,"",50,"",100)) +
+  coord_flip() +
+  guides(
+    color = guide_colorbar(
+      title = "Mean Expression",
+      title.position = "left",   # << here
+      title.hjust = 0.5,
+      barwidth = 1,
+      barheight = 5
+    ),
+    size = guide_legend(
+      override.aes = list(shape=21, colour="black", fill="#adb5bd"),
+      title = "% of exp. cells",
+      label.position = "right",
+      title.position = "left",
+      title.hjust = 0.5
+    )
+  )
+
+# p2$guides$colour$title <- "Mean Expression"
+# p2$guides$colour$title.position <- "top"
+# p2$guides$colour$title.hjust <- 0.5
+#seu$ann_lv2 <- factor(seu$ann_lv2,levels=rev(levels(seu$ann_lv2)))
+suppressWarnings(print(p4))
+
+```
+
+# 6 Save objects
+```{r}
+if(!dir.exists(here("data","SCEs","analysis"))) {
+  dir.create(here("data","SCEs","analysis"), recursive = TRUE)
+}
+
+out <- here("data","SCEs","analysis","bal.SEU.qs")
+if(!file.exists(out)) {
+  qsave(seu,file=out,nthreads=24)
+}
+
+# out <- here("data","SCEs","manual.annot","bal_RecM.SEU.qs")
+# if(!file.exists(out)) {
+#   s <- subset(seu, init.clust %in% c("RecM"))
+#   s$init.clust <- fct_drop(s$init.clust)
+#   qsave(s,file=out,nthreads =16)
+# }
+# 
+# out <- here("data","SCEs","manual.annot","bal_myeloid.SEU.qs")
+# if(!file.exists(out)) {
+#   s <- subset(seu, init.clust %in% c("RecM","cDC","pDC"))
+#   s$init.clust <- fct_drop(s$init.clust)
+#   qsave(s,file=out,nthreads =16)
+# }
+# 
+# out <- here("data","SCEs","manual.annot","bal_T.SEU.qs")
+# if(!file.exists(out)) {
+#   s <- subset(seu, init.clust %in% c("T/NK"))
+#   s$init.clust <- fct_drop(s$init.clust)
+#   qsave(s,file=out,nthreads =16)
+# }
+# 
+# out <- here("data","SCEs","manual.annot","bal_AM.SEU.qs")
+# if(!file.exists(out)) {
+#   s <- subset(seu, init.clust %in% c("AM","Prolif.M"))
+#   s$init.clust <- fct_drop(s$init.clust)
+#   qsave(s,file=out,nthreads =16)
+# }
+```
+
+# 7 Save figures
+```{r}
+celltype <- "combined"
+if(!dir.exists(here("data","plots",celltype))) {
+  dir.create(here("data","plots",celltype),recursive=TRUE)
+}
+
+# no split
+# umap
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+
+ggsave(plot=p2 + theme(plot.tag = element_text(size = 14, face = "bold")),
+       device="jpeg",
+       dpi=1600,
+       filename = here("data","plots",celltype,"bal_ann_lv2.umap.jpeg"),
+       height=4,
+       width=6.5)
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+# cellprop
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+
+ggsave(plot=p3 + theme(plot.tag = element_text(size = 14, face = "bold")),
+       device="jpeg",
+       dpi=1600,
+       filename = here("data","plots",celltype,"bal_prop.jpeg"),
+       height=3.5,
+       width=3)
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+# marker gene dotplot
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+
+ggsave(plot=p4 + theme(plot.tag = element_text(size = 14, face = "bold")),
+       device="jpeg",
+       dpi=1600,
+       filename = here("data","plots",celltype,"bal_marker_dotplot.jpeg"),
+       height=15,
+       width=10)
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+# cell type proportion test
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+ggsave(plot=p5 + theme(plot.tag = element_text(size = 14, face = "bold")),
+       device="jpeg",
+       dpi=1600,
+       filename = here("data","plots",celltype,"bal_myeloid_proptest.jpeg"),
+       height=4,
+       width=6)
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+ggsave(plot=p6 + theme(plot.tag = element_text(size = 14, face = "bold")),
+       device="jpeg",
+       dpi=1600,
+       filename = here("data","plots",celltype,"bal_lymphoid_proptest.jpeg"),
+       height=4,
+       width=6)
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+# # cellprop test
+# showtext::showtext_auto()
+# showtext::showtext_opts(dpi = 1600)
+#
+# p3 +
+#   theme(plot.tag = element_text(size = 14, face = "bold"))
+#
+# ggsave(plot=last_plot(),
+#        device="jpeg",
+#        dpi=1600,
+#        filename = here("data","plots",celltype,"pbmc_myeloid_proptest.jpeg"),
+#        height=4,
+#        width=5)
+#
+
+
+
+```

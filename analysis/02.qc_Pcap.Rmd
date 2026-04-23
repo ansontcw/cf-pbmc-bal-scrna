@@ -1,0 +1,552 @@
+---
+title: 'Quality control for PBMC single captures'
+author:
+- name: Anson Wong
+date: "`r Sys.Date()`"
+description: null
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()
+
+```
+
+# 1 Load packages
+
+```{r}
+suppressPackageStartupMessages({
+library(DropletUtils)
+library(here)
+library(ggplot2)
+library(Seurat)
+library(cowplot)
+library(patchwork)
+library(scater)
+library(dplyr)
+library(forcats)
+library(janitor)
+library(stringr)
+library(AnnotationHub)
+library(ensembldb)
+library(msigdbr)
+library(Homo.sapiens)
+library(qs)
+library(xgboost)
+library(pROC)
+library(scDblFinder)
+library(BiocParallel)
+library(tibble)
+library(future.apply)
+library(gridExtra)
+})
+source(here("code","scds.R"))
+set.seed(1990)
+
+```
+
+# 2 Set names for captures
+
+```{r}
+# sampleID
+samples <- c("M1C191B",
+             "cf-p15","cf-p14","cf-p6","cf-p5",
+             "mabsc-p11","mabsc-p9","mabsc-p4","mabsc-p3",
+             "mabscpd-p13","mabscpd-p12","mabscpd-p1"
+)
+
+# batch_name
+batch_name <- "Pcap"
+
+# Specify capture name
+capture_names <- setNames(samples, samples)
+
+```
+
+# 3 Read CellBender outputs
+Ambient RNA and empty droplets were removed by CellBender (see code/cellbender.sh).
+```{r}
+captures <- setNames(
+  here("data",
+       "cellbender",
+       capture_names,
+       paste0(capture_names,".cellbender_filtered.h5")),
+  capture_names)
+
+# read objects
+outLst <- here("data","SCEs","doublet",paste0(batch_name,".qc.sceLst.qs"))
+if (!file.exists(outLst)) {
+  sceLst <- lapply(capture_names, function(cap) {
+    sce <- read10xCounts(samples = captures[cap], col.names = TRUE)
+    stopifnot(!anyDuplicated(colnames(sce)))
+    
+    sce <- splitAltExps(
+      sce,
+      rowData(sce)$Type,
+      "Gene Expression")
+    
+    # Tidy up colData
+    sce$Capture <- factor(sce$Sample)
+    sce$Sample <- NULL
+    
+    # Number of droplets after CellBender
+    dim(sce)
+    
+    # add sampleID
+    sce$sampleID <- factor(cap)
+    
+    # change DelayedMatrix to dgCMatrix
+    assay(sce, "counts") <- as(assay(sce, "counts"), "dgCMatrix")
+    
+    sce
+  })
+}
+
+```
+
+# 4 Add metadata and sex check
+```{r fig.height=9,fig.width=12}
+outLst <- here("data","SCEs","doublet",paste0(batch_name,".qc.sceLst.qs"))
+if (!file.exists(outLst)) {
+  sceLst <- lapply(sceLst, function(sce) {
+    # read metadata.csv
+    metadata <- read.csv(here("data",
+                              "sample_sheets",
+                              paste0(levels(sce$Capture),".metadata.csv")))
+    
+    i <- match(sce$sampleID, metadata$sampleID)
+    
+    # add patient demographics
+    colData(sce) <- cbind(
+      colData(sce),
+      metadata[i,c("Age","Sex","Condition","Bronchiectasis")]
+    )
+    
+    sce
+  })
+  
+  pt.list <- lapply(sceLst, function(sce) {
+      # sex check by the expression of XIST, a female-specific gene. 
+    # this detects certain types of sample-mix-ups.
+    plotExpression(
+      sce, 
+      "XIST", 
+      x = "sampleID",
+      colour_by = "Sex", 
+      exprs_values = "counts",
+      swap_rownames = "Symbol") +
+      scale_colour_manual(
+        values = c(
+          "Female" = "deeppink3", 
+          "Male" = "deepskyblue"),
+        name = "Sex") +
+      theme_cowplot() + 
+      theme(axis.text.x = element_text(angle = 0, vjust = 1, hjust = 1),
+            axis.title.x = element_blank()) -> p
+    return(p)
+  })
+  
+  do.call("grid.arrange", c(pt.list, ncol=4))
+}
+```
+
+# 5 Add feature-based annotation
+```{r}
+if (!file.exists(outLst)) {
+  ah <- AnnotationHub(cache="/group/canc2/anson/.cache/R/AnnotationHub", ask=FALSE)
+  EnsDb.Hsapiens.v98 <- query(ah, c("EnsDb", "Homo Sapiens", 98))[[1]]
+    
+  sceLst <- lapply(sceLst, function(sce) {
+    # make feature names unique
+    rownames(sce) <- uniquifyFeatureNames(rowData(sce)$ID, rowData(sce)$Symbol)
+    
+    # prepare ensembl v98 database
+    ensdb_columns <- setNames(c("GENEBIOTYPE", "SEQNAME"),
+                              paste0("ENSEMBL.",
+                                     c("GENEBIOTYPE", "SEQNAME")))
+    stopifnot(all(ensdb_columns %in% columns(EnsDb.Hsapiens.v98)))
+    
+    ensdb_df <- DataFrame(
+      lapply(ensdb_columns, function(column) {
+        mapIds(
+          x = EnsDb.Hsapiens.v98,
+          keys = rowData(sce)$ID,
+          keytype = "GENEID",
+          column = column,
+          multiVals = "first")
+      }),
+      row.names = rowData(sce)$ID)
+    
+    # prepare ncbi database
+    ncbi_columns <- setNames(c("ALIAS", "ENTREZID", "GENENAME"),
+                             paste0("NCBI.", c("ALIAS", "ENTREZID", "GENENAME")))
+    stopifnot(all(ncbi_columns %in% columns(Homo.sapiens)))
+    ncbi_df <- DataFrame(
+      lapply(ncbi_columns, function(column) {
+        mapIds(
+          x = Homo.sapiens,
+          keys = rowData(sce)$ID,
+          keytype = "ENSEMBL",
+          column = column,
+          multiVals = "CharacterList")
+      }),
+      row.names = rowData(sce)$ID)
+    
+    rowData(sce) <- cbind(rowData(sce), ensdb_df, ncbi_df)
+    
+    sce
+  })
+}
+```
+
+# 6 QC 
+## 6.1 Calculate metrics
+```{r}
+if (!file.exists(outLst)) {
+  sceLst <- lapply(sceLst, function(sce) {
+    # prepare gene sets
+    ## mitochondrial gene set
+    mito_set <- rownames(sce)[which(rowData(sce)$ENSEMBL.SEQNAME == "MT")]
+    is_mito <- rownames(sce) %in% mito_set
+    summary(is_mito)
+    
+    ## ribosomal gene set
+    ribo_set <- grep("^RP(S|L)", rownames(sce), value = TRUE)
+    c2_sets <- msigdbr(species = "Homo sapiens", category = "C2")
+    ribo_set <- union(
+      ribo_set,
+      c2_sets[c2_sets$gs_name == "KEGG_RIBOSOME", ]$human_gene_symbol)
+    is_ribo <- rownames(sce) %in% ribo_set
+    summary(is_ribo)
+    
+    # calculate QC metrics
+    sce <- addPerCellQCMetrics(
+      sce,
+      subsets = list(Mito = which(is_mito),
+                     Ribo = which(is_ribo)), 
+      use.altexps = NULL)
+    
+    sce
+  })
+  qsave(sceLst, file=outLst, nthreads=16)
+} else {
+  sceLst <- qread(outLst, nthreads=16)
+}
+```
+
+## 6.2 Visualize metrics before removal
+```{r fig.height=6,fig.width=6}
+sample_colours <- setNames(
+    c(palette.colors(10,"Tableau 10"),palette.colors(length(sceLst)-10,"Accent")),
+    names(sceLst))
+
+# add sample colours
+sceLst <- lapply(sceLst, function(sce) {
+  cols <- setNames(
+    c(sample_colours[levels(sce$sampleID)]),levels(sce$sampleID))
+  # add colour
+  sce$colours <- S4Vectors::make_zero_col_DFrame(ncol(sce))
+  sce$colours$sample_colours <- cols[sce$sampleID]
+  sce
+})
+
+# library size
+pt.lib <- lapply(sceLst, function(sce) {
+  p1 <- plotColData(
+    sce,
+    "sum",
+    x = "sampleID",
+    colour_by = "sampleID",
+    point_size = 0.5) +
+    scale_y_log10() +
+    scale_colour_manual(values = sce$colours$sample_colours, name = "sampleID") +
+    theme(axis.title.x = element_blank()) + NoLegend()
+  return(p1)
+})
+
+# number of genes detected
+pt.ng <- lapply(sceLst, function(sce) {
+  p2 <- plotColData(
+    sce,
+    "detected",
+    x = "sampleID",
+    colour_by = "sampleID",
+    point_size = 0.5) +
+    scale_colour_manual(values = sce$colours$sample_colours, name = "sampleID") +
+    theme(axis.title.x = element_blank()) + NoLegend()
+  return(p2)
+})
+
+
+do.call("grid.arrange", c(pt.lib, ncol=4))
+do.call("grid.arrange", c(pt.ng, ncol=4))
+```
+
+## 6.3 Remove cells with features < 200
+```{r}
+sceLst_pre_QC_outlier_removal <- sceLst
+
+sceLst_pre_QC_outlier_removal <- lapply(sceLst_pre_QC_outlier_removal, function(sce){
+  feature_drop <- sce$detected < 200
+  keep <- !feature_drop
+  sce$keep <- keep
+  sce
+})
+
+sceLst <- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  sce <- sce[, sce$keep]
+  sce
+})
+
+# print results
+do.call("rbind",lapply(names(sceLst), function(s) {
+  feature_drop <- sceLst_pre_QC_outlier_removal[[s]]$detected < 200
+  data.frame(
+  ByFeature = tapply(
+    feature_drop, 
+    sceLst_pre_QC_outlier_removal[[s]]$Capture, 
+    sum,
+    na.rm = TRUE),
+  Remaining = as.vector(unname(table(sceLst[[s]]$Capture))),
+  PercRemaining = round(
+    100 * as.vector(unname(table(sceLst[[s]]$Capture))) /
+      as.vector(
+        unname(
+          table(sceLst_pre_QC_outlier_removal[[s]]$Capture))), 1)) |>
+  tibble::rownames_to_column("Capture") |>
+  dplyr::arrange(dplyr::desc(PercRemaining)) 
+})) %>% knitr::kable(caption = "Number of droplets remaining.")
+
+```
+
+## 6.4 Visualize metrics after removal
+```{r fig.width=8,fig.height=4}
+# library size
+pt.lib <- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  p1 <- plotColData(
+    sce,
+    "sum",
+    x = "sampleID",
+    colour_by = "keep",
+    point_size = 0.5) +
+    theme(axis.title.x = element_blank())
+  return(p1)
+})
+
+# number of genes detected
+pt.ng <- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  p2 <- plotColData(
+    sce,
+    "detected",
+    x = "sampleID",
+    colour_by = "keep",
+    point_size = 0.5) +
+    theme(axis.title.x = element_blank())
+  return(p2)
+})
+
+do.call("grid.arrange", c(pt.lib, ncol=4))
+do.call("grid.arrange", c(pt.ng, ncol=4))
+
+```
+
+# 7 Doublet detection
+## 7.1 Call doublets
+```{r}
+outLst <- here("data","SCEs","doublet",paste0(batch_name,".qc.rmDbl.sceLst.qs"))
+if (!file.exists(outLst)) {
+  out <- here("data","SCEs","doublet",paste0(batch_name,".doublets.SCE.qs"))
+  if(!file.exists(out)){
+    sceLst_pre_QC_outlier_removal <- lapply(sceLst, function(sce){
+      # scds
+      sce1 <- bcds(sce, retRes = TRUE, estNdbl = TRUE)
+      sce1 <- cxds(sce1, retRes = TRUE, estNdbl = TRUE)
+      sce1 <- cxds_bcds_hybrid(sce1, estNdbl = TRUE)
+      # scDblFInder 
+      set.seed(1990)
+      bp <- MulticoreParam(16, RNGseed=1990)
+      sce1 <- scDblFinder(sce1, dbr = ncol(sce1)/1000*0.008, BPPARAM=bp)
+      sce1
+    })
+    
+    lapply(sceLst_pre_QC_outlier_removal, function(s){
+      colData(s) %>% 
+        data.frame %>%
+        rownames_to_column(var = "cell")
+    }) %>% 
+      bind_rows() %>% 
+      qsave(file = out, nthreads=16)
+    qsave(sceLst_pre_QC_outlier_removal, file=outLst, nthreads=16)
+  }
+} else {
+  sceLst_pre_QC_outlier_removal <- qread(outLst, nthreads=16)
+}
+```
+
+## 7.2 Remove doublets
+```{r}
+sceLst <- lapply(sceLst_pre_QC_outlier_removal, function(sce){
+  sce <- sce[, !(sce$hybrid_call & sce$scDblFinder.class == "doublet")]
+})
+
+# n doublet
+do.call("rbind",lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  table(sce$Capture, sce$hybrid_call & sce$scDblFinder.class == "doublet") 
+})) -> tab
+
+tab %>%
+  knitr::kable(caption = "n doublet called by both scds and scDblFinder")
+
+# % doublet
+data.frame(pct=round(tab[,2]/(tab[,1]+tab[,2])*100,
+                       digits=3)) %>% 
+  knitr::kable(caption = "% doublet called by both scds and scDblFinder")
+```
+
+
+# 8 QC: mitochondrial percent
+## 8.1 Visualize metrics before removal
+```{r fig.width=8,fig.height=6}
+# subsets_Mito_percent
+pt.mito <- lapply(sceLst, function(sce) {
+  p1 <- plotColData(
+    sce,
+    "subsets_Mito_percent",
+    x = "sampleID",
+    colour_by = "sampleID",
+    point_size = 0.5) +
+    scale_y_log10() +
+    scale_colour_manual(values = sce$colours$sample_colours, name = "sampleID") +
+    theme(axis.title.x = element_blank()) 
+  return(p1)
+})
+
+# number of genes detected
+pt.ribo <- lapply(sceLst, function(sce) {
+  p2 <- plotColData(
+    sce,
+    "subsets_Ribo_percent",
+    x = "sampleID",
+    colour_by = "sampleID",
+    point_size = 0.5) +
+    scale_y_log10() +
+    scale_colour_manual(values = sce$colours$sample_colours, name = "sampleID") +
+    theme(axis.title.x = element_blank())
+  return(p2)
+})
+
+suppressWarnings(do.call("grid.arrange", c(pt.mito, ncol=4)))
+suppressWarnings(do.call("grid.arrange", c(pt.ribo, ncol=4)))
+
+```
+
+## 8.2 Remove cells with >10% mitochondrial reads
+```{r}
+sceLst_pre_QC_outlier_removal <- sceLst
+
+sceLst_pre_QC_outlier_removal <- lapply(sceLst_pre_QC_outlier_removal, function(sce){
+  mito_drop <- sce$subsets_Mito_percent > 10
+  keep <- !mito_drop
+  sce$keep <- keep
+  sce
+})
+
+sceLst <- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  sce <- sce[, sce$keep]
+  sce
+})
+
+# print results
+do.call("rbind",lapply(names(sceLst), function(s) {
+  mito_drop <- sceLst_pre_QC_outlier_removal[[s]]$subsets_Mito_percent > 10
+  data.frame(
+  ByMito = tapply(
+    mito_drop, 
+    sceLst_pre_QC_outlier_removal[[s]]$Capture, 
+    sum,
+    na.rm = TRUE),
+  Remaining = as.vector(unname(table(sceLst[[s]]$Capture))),
+  PercRemaining = round(
+    100 * as.vector(unname(table(sceLst[[s]]$Capture))) /
+      as.vector(
+        unname(
+          table(sceLst_pre_QC_outlier_removal[[s]]$Capture))), 1)) |>
+  tibble::rownames_to_column("Capture") |>
+  dplyr::arrange(dplyr::desc(PercRemaining))
+})) %>% knitr::kable(caption = "Number of droplets remaining.")
+
+
+```
+
+## 8.3 Visualize metrics after removal
+```{r fig.width=8,fig.height=6}
+# subsets_Mito_percent
+pt.mito <- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  p1 <- plotColData(
+    sce,
+    "subsets_Mito_percent",
+    x = "sampleID",
+    colour_by = "keep",
+    point_size = 0.5) +
+    scale_y_log10() +
+    theme(axis.title.x = element_blank())
+  return(p1)
+})
+
+# number of genes detected
+pt.ribo <- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  p2 <- plotColData(
+    sce,
+    "subsets_Ribo_percent",
+    x = "sampleID",
+    colour_by = "keep",
+    point_size = 0.5) +
+    scale_y_log10() +
+    theme(axis.title.x = element_blank())
+  return(p2)
+})
+
+suppressWarnings(do.call("grid.arrange", c(pt.mito, ncol=4)))
+suppressWarnings(do.call("grid.arrange", c(pt.ribo, ncol=4)))
+
+```
+
+# 9 Number of droplets retained after QC
+```{r fig.width=8,fig.height=6}
+pt.n <- lapply(sceLst, function(sce) {
+  # number of droplets assigned by HTO method
+  p1 <- ggcells(sce) + 
+    geom_bar(aes(x = sampleID, fill = sampleID)) + 
+    geom_text(stat='count', aes(x = sampleID, label=..count..), hjust=1, size=2) +
+    coord_flip() + 
+    ggtitle(levels(sce$Capture)) +
+    ylab("Number of droplets") + 
+    theme_cowplot(font_size = 8) + 
+    scale_y_continuous(breaks=seq(0,16000,4000),limits=c(0,16000)) +
+    scale_fill_manual(values = sce$colours$sample_colours) +
+    theme(axis.title.y = element_blank(),
+          axis.text.y = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    guides(fill=guide_legend(title="sampleID")) + NoLegend()
+  return(p1)
+})
+
+suppressWarnings(do.call("grid.arrange", c(pt.n, ncol=3)))
+```
+
+# 10 Save object
+```{r}
+prep_dir <- here("data","SCEs","preprocessed")
+if(!dir.exists(prep_dir)) {
+  dir.create(prep_dir, recursive = TRUE)
+}
+
+out <- here("data","SCEs","preprocessed",paste0(batch_name,".preprocessed.sceLst.qs"))
+if(!file.exists(out)) {
+  qsave(sceLst, out, nthreads=16)
+}
+
+```

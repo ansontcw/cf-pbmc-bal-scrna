@@ -1,0 +1,31 @@
+---
+title: "Demultiplexing and QC results of paired BAL and PBMC scRNA-seq data"
+site: workflowr::wflow_site
+output:
+  workflowr::wflow_html:
+    toc: false
+editor_options:
+  chunk_output_type: console
+---
+
+## Data Processing {.tabset}
+
+### Demultiplexing
+#### BAL
+Demultiplexing results of BAL cells could be found in [this webpage](https://ansontcw.github.io/cf-eti-bal-scrna/).
+
+#### PBMC
+- [batch1](01.demux_PP1.html)
+- [batch2](01.demux_PP2.html)
+
+### Quality control
+#### BAL
+- [batch1](02.qc_BP1.html)
+- [batch2](02.qc_BP2.html)
+- [batch3](02.qc_Pi1.html)
+- [batch4](02.qc_capture1.html)
+
+#### PBMC
+- [batch1](02.qc_PP1.html)
+- [batch2](02.qc_PP2.html)
+- [batch3](02.qc_Pcap.html)

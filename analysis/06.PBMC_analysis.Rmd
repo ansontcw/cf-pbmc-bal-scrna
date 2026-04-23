@@ -1,0 +1,1694 @@
+---
+title: 'PBMC analysis'
+author:
+- name: Anson Wong
+date: "`r Sys.Date()`"
+description: null
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()
+
+```
+
+# 1 Load packages
+
+```{r}
+suppressPackageStartupMessages({
+library(Seurat)
+library(ComplexHeatmap)
+library(circlize)
+library(igraph)
+library(harmony)
+library(here)
+library(qs)
+library(forcats)
+library(pals)
+library(ggplot2)
+library(speckle)
+library(patchwork)
+library(dplyr)
+library(Cepo)
+library(phateR)
+library(rstatix)
+library(ggpubr)
+library(clustree)
+library(tidyverse)
+library(purrr)
+library(SeuratDisk)
+library(SingleCellExperiment)
+library(scran)
+library(sceasy)
+library(schard)
+library(BiocParallel)
+library(data.table)
+library(Matrix)
+library(edgeR)
+library(limma)
+library(RUVSeq)
+library(readr)
+library(tibble)
+library(stringr)
+library(future)
+library(future.apply)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(AnnotationDbi)
+library(cowplot)
+})
+options(future.globals.maxSize = 500000000000, future.seed=TRUE)
+set.seed(1990)
+
+```
+
+```{r}
+# prepare colours
+colours <- c(brewer.paired(12), rev(brewer.pastel1(9)),  brewer.pastel2(8), brewer.spectral(11), 
+             rev(brewer.accent(8)), rev(brewer.dark2(8)), 
+             brewer.set1(9), brewer.pastel2(8), brewer.spectral(11), 
+             brewer.brbg(11)[1:5],rev(brewer.set3(12)),brewer.brbg(11)[6:11],
+             brewer.piyg(11)[1:5],brewer.piyg(11)[7:11], brewer.piyg(11)[1:5],brewer.piyg(11)[7:11])
+
+Condition2.colours <- setNames(c("#26547c","#ffd166","#ef476f"),
+                               c("C","CFN","CFB"))
+```
+
+
+# 2 Prepare objects
+## 2.1 Load objects
+```{r}
+seu <- qread(here("data","SCEs","analysis","pbmc.SEU.qs"),nthreads=24)
+```
+
+
+# 3 Cepo
+```{r}
+# Cepo
+cepoMarkers <- Cepo(seu[["SCT"]]@data,
+                    seu$ann_lv1,
+                    exprsPct = 0.2)
+cepoMarkers$stats
+
+cepoMarkers$stats <- cepoMarkers$stats[!grepl('^A[C|F|P|L][0|1]', row.names(cepoMarkers$stats)),]
+
+sapply(1:ncol(cepoMarkers$stats), function(i){
+  names(sort(cepoMarkers$stats[,i], decreasing = TRUE))[1:300]
+}) %>% data.frame() -> dat2
+
+colnames(dat2) <- colnames(cepoMarkers$stats)
+dat2
+
+dat2 %>% data.frame() %>% write.csv(file=here("data","pbmc_ann_lv1.markers.csv"),row.names = FALSE)
+```
+
+
+# 4 DE
+## 4.1 Pseudobulk
+```{r}
+DefaultAssay(seu) <- "RNA"
+
+out_dir <- here("data", "pseudobulk_matrix")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# store pseudobulk Seurat objects here
+pb_list <- list()
+
+# meta.data (avoid piping a Seurat object by accident)
+md <- seu[[]]
+cells <- rownames(md)
+
+safe_name <- function(x) {
+  # replace anything that's not alnum, dot, underscore, or dash with underscore
+  str_replace_all(x, "[^A-Za-z0-9._-]", "_")
+}
+
+# Choose workers (rule of thumb: <= number of cell types and <= CPU cores)
+workers <- min(20, parallel::detectCores())  # change 8 to what your machine allows
+
+# Linux: multicore is fastest; Windows: use multisession
+# plan(multicore, workers = workers)     # Linux/macOS
+plan(multisession, workers = workers)    # portable
+
+for (x in levels(seu$ann_lv2)) {
+  
+  if (x == "Ambiguous") {
+    message("[SKIP] ", x, ": skipping Ambiguous level")
+    next
+  }
+
+  per_sample <- md %>%
+    filter(ann_lv2 == x) %>%
+    dplyr::count(sampleID, name = "n")
+
+  if (nrow(per_sample) == 0) {
+    message("[SKIP] ", x, ": no cells found")
+    next
+  }
+
+  if (any(per_sample$n < 3)) {
+    bad <- paste(per_sample$sampleID[per_sample$n < 3], collapse = ", ")
+    message("[SKIP] ", x, ": <3 cells in sample(s): ", bad)
+    next
+  }
+
+  s <- subset(seu, subset = ann_lv2 == x)
+  DefaultAssay(s) <- "RNA"
+
+  pseudo_bulk <- AggregateExpression(
+    s, assays = "RNA", slot = "counts",
+    group.by = "ID2",
+    return.seurat = TRUE,
+    verbose = FALSE
+  )
+  
+  pseudo_bulk <- NormalizeData(pseudo_bulk,verbose = FALSE)
+  pb_list[[x]] <- pseudo_bulk
+  message("[OK] ", x, ": stored pseudobulk (", ncol(pseudo_bulk), " groups)")
+
+  # pb_mat <- GetAssayData(pseudo_bulk, assay = "RNA", slot = "counts")
+  # 
+  # fn <- file.path(out_dir, paste0(safe_name(x), "_counts.csv"))
+  # write_csv(
+  #   rownames_to_column(as.data.frame(as.matrix(pb_mat), check.names = FALSE), "gene"),
+  #   fn
+  # )
+  # 
+  # message("[WRITE] ", x, " -> ", basename(fn))
+}
+
+```
+
+## 4.2 RUVseq [sex]
+```{r}
+## 4.2 RUVseq  (with Sex + confounding check; minimal changes)
+# ----------------------------
+# Config
+# ----------------------------
+pb_dir  <- here("data", "pseudobulk_matrix")
+ruv_dir <- here("data", "DE", "RUV_sex2")
+
+k_ruv <- 5
+min_max_count <- 10
+
+dir.create(ruv_dir, recursive = TRUE, showWarnings = FALSE)
+
+workers <- min(20, parallel::detectCores())
+plan(multisession, workers = workers)
+
+# ----------------------------
+# Helpers
+# ----------------------------
+read_counts_csv <- function(path) {
+  dat <- readr::read_csv(path, show_col_types = FALSE)
+  gene_col <- if ("gene" %in% names(dat)) "gene" else if ("Gene" %in% names(dat)) "Gene" else names(dat)[1]
+
+  counts <- dat %>%
+    dplyr::select(-all_of(gene_col)) %>%
+    as.data.frame(check.names = FALSE)
+
+  counts <- as.matrix(sapply(counts, as.numeric))
+  rownames(counts) <- dat[[gene_col]]
+
+  list(counts = counts, gene_col = gene_col)
+}
+
+# Uses your known ID2->Sex mapping from the table.
+# If any sampleID is missing here, it errors (so you notice immediately).
+make_sample_info <- function(sample_ids) {
+  sex_map <- c(
+    "C-1"="Female","C-2"="Female","C-3"="Female","C-4"="Male","C-5"="Male",
+    "CFN-1"="Male","CFN-2"="Female","CFN-3"="Male","CFN-4"="Male","CFN-5"="Male","CFN-6"="Female",
+    "CFB-1"="Male","CFB-2"="Male","CFB-3"="Female","CFB-4"="Male","CFB-5"="Female","CFB-6"="Male"
+  )
+
+  si <- tibble(sampleID = sample_ids) %>%
+    mutate(
+      group3 = case_when(
+        str_starts(sampleID, "C-")   ~ "C",
+        str_starts(sampleID, "CFN-") ~ "CFN",
+        str_starts(sampleID, "CFB-") ~ "CFB",
+        TRUE ~ NA_character_
+      ),
+      Sex = unname(sex_map[sampleID])
+    )
+
+  if (any(is.na(si$group3))) {
+    stop("Cannot parse group for: ", paste(si$sampleID[is.na(si$group3)], collapse = ", "))
+  }
+  if (any(is.na(si$Sex))) {
+    stop("Cannot parse Sex for: ", paste(si$sampleID[is.na(si$Sex)], collapse = ", "),
+         "\nAdd these sampleIDs to sex_map in make_sample_info().")
+  }
+
+  si$Sex <- factor(si$Sex, levels = c("Female", "Male"))
+  si
+}
+
+# returns list(design=..., msg="...") and decides whether Sex is estimable
+make_design_with_optional_sex <- function(sample_info) {
+  sample_info$group <- droplevels(factor(sample_info$group))
+  sample_info$Sex   <- droplevels(factor(sample_info$Sex))
+
+  design0 <- model.matrix(~0 + group, data = sample_info)
+  colnames(design0) <- sub("^group", "", colnames(design0))
+
+  # only try adding Sex if both sexes are present
+  if (nlevels(sample_info$Sex) < 2) {
+    return(list(design = design0, msg = "[DESIGN] Sex has <2 levels; using group-only design"))
+  }
+
+  design1 <- model.matrix(~0 + group + Sex, data = sample_info)
+  colnames(design1) <- sub("^group", "", colnames(design1))
+
+  # check estimability (full rank)
+  if (qr(design1)$rank < ncol(design1)) {
+    # Sex is confounded (or near-confounded) with group in this subset
+    return(list(
+      design = design0,
+      msg = paste0(
+        "[DESIGN] Sex confounded with group (rank-deficient); using group-only design. group x Sex = ",
+        paste(capture.output(print(table(sample_info$group, sample_info$Sex))), collapse = " ")
+      )
+    ))
+  }
+
+  list(
+    design = design1,
+    msg = paste0(
+      "[DESIGN] Using group+Sex design. group x Sex = ",
+      paste(capture.output(print(table(sample_info$group, sample_info$Sex))), collapse = " ")
+    )
+  )
+}
+
+run_ruvr_edger <- function(counts, sample_info, contrast_expr, out_csv,
+                           k_ruv = 5, min_max_count = 10, gene_col = "gene") {
+  keep <- apply(counts, 1, max) >= min_max_count
+  counts <- counts[keep, , drop = FALSE]
+
+  dge <- DGEList(counts = counts)
+  dge <- calcNormFactors(dge, method = "TMM")
+
+  # build design (group + Sex if estimable)
+  des <- make_design_with_optional_sex(sample_info)
+  design <- des$design
+
+  cont <- limma::makeContrasts(contrasts = contrast_expr, levels = design)
+
+  # initial fit for residuals used by RUVr
+  y0 <- estimateDisp(dge, design)
+  fit0 <- glmQLFit(y0, design)
+
+  ruv <- RUVSeq::RUVr(as.matrix(counts), rownames(counts), k_ruv,
+                      residuals = residuals(fit0))
+
+  design_ruv <- cbind(design, ruv$W)
+  cont_ruv <- rbind(cont, matrix(0, nrow = ncol(ruv$W), ncol = ncol(cont)))
+
+  y1 <- estimateDisp(dge, design_ruv)
+  fit1 <- glmQLFit(y1, design_ruv)
+  qlf <- glmQLFTest(fit1, contrast = cont_ruv)
+
+  out <- topTags(qlf, n = Inf, sort.by = "none")$table
+
+  res <- out %>%
+    tibble::rownames_to_column(var = gene_col) %>%
+    dplyr::rename(AveExpr = logCPM, P.Value = PValue, adj.P.Val = FDR) %>%
+    arrange(adj.P.Val, P.Value) %>%
+    filter(adj.P.Val < 0.1)
+
+  readr::write_csv(res, out_csv)
+  invisible(list(res = res, design_msg = des$msg))
+}
+
+contrasts <- list(
+  CFvsC  = list(groups = c("C", "CF"),  expr = "CF - C"),
+  CFNvsC = list(groups = c("C", "CFN"), expr = "CFN - C"),
+  CFBvsC = list(groups = c("C", "CFB"), expr = "CFB - C"),
+  CFBvsCFN = list(groups = c("CFB", "CFN"), expr = "CFB - CFN")
+)
+
+# ----------------------------
+# Work for one file (one cell type)
+# ----------------------------
+process_one_celltype <- function(f) {
+  celltype <- sub("_counts\\.csv$", "", basename(f))
+  cell_out_dir <- file.path(ruv_dir, celltype)
+  dir.create(cell_out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  obj <- read_counts_csv(f)
+  counts <- obj$counts
+  gene_col <- obj$gene_col
+
+  si_all <- make_sample_info(colnames(counts))
+
+  results <- list(celltype = celltype, ok = TRUE, messages = character())
+
+  for (nm in names(contrasts)) {
+    spec <- contrasts[[nm]]
+
+    si <- si_all %>%
+      mutate(group = case_when(
+        nm == "CFvsC" & group3 != "C" ~ "CF",
+        TRUE ~ group3
+      )) %>%
+      filter(group %in% spec$groups) %>%
+      mutate(group = factor(group, levels = spec$groups))
+
+    counts_sub <- counts[, si$sampleID, drop = FALSE]
+    out_csv <- file.path(cell_out_dir, paste0(celltype, "_", nm, ".csv"))
+
+    msg <- tryCatch({
+      ret <- run_ruvr_edger(counts_sub, si, spec$expr, out_csv,
+                            k_ruv = k_ruv, min_max_count = min_max_count, gene_col = gene_col)
+      paste0("[WRITE] ", basename(out_csv), " ", ret$design_msg)
+    }, error = function(e) {
+      paste0("[FAIL] ", celltype, " ", nm, ": ", conditionMessage(e))
+    })
+
+    results$messages <- c(results$messages, msg)
+  }
+
+  results
+}
+
+# ----------------------------
+# Parallel run
+# ----------------------------
+files <- sort(list.files(pb_dir, pattern = "_counts\\.csv$", full.names = TRUE))
+
+log <- future.apply::future_lapply(files, process_one_celltype, future.seed = TRUE)
+
+cat(paste(unlist(lapply(log, `[[`, "messages")), collapse = "\n"), "\n")
+message("Done. Outputs under: ", ruv_dir)
+
+```
+
+## 4.3 GSEA
+```{r}
+# -------
+# Config
+# ----------------------------
+ruv_dir <- here("data", "DE", "RUV_sex2")
+gsea_root <- here("data", "gsea_sex2")
+dir.create(gsea_root, recursive = TRUE, showWarnings = FALSE)
+
+workers <- min(20, parallel::detectCores())
+plan(multisession, workers = workers)   # use multicore on linux if you want
+
+# find all DE csvs under data/DE/RUV/<celltype>/*.csv
+csv_files <- sort(list.files(ruv_dir, pattern = "\\.csv$", recursive = TRUE, full.names = TRUE))
+if (length(csv_files) == 0) stop("No CSV files found under: ", ruv_dir)
+
+# ----------------------------
+# Worker: run gseGO on one file (ONE run on all genes; interpret NES sign later)
+# ----------------------------
+run_one_gsego <- function(de_csv, gsea_root) {
+  celltype <- basename(dirname(de_csv))
+  compare  <- str_remove(basename(de_csv), "^.*?_") %>% str_remove("\\.csv$")  # e.g. CFNvsC
+  prefix   <- str_remove(basename(de_csv), "\\.csv$")                         # e.g. CD4T.naive_CFNvsC
+
+  # read DE
+  de <- readr::read_csv(de_csv, show_col_types = FALSE)
+
+  # required columns check
+  if (!all(c("gene", "logFC") %in% names(de))) {
+    return(list(file = de_csv, ok = FALSE, msg = "[SKIP] missing gene/logFC"))
+  }
+
+  # build ranking (tutorial style)
+  gene_list <- de$logFC
+  names(gene_list) <- de$gene
+  gene_list <- gene_list[!is.na(gene_list) & !is.na(names(gene_list)) & names(gene_list) != ""]
+  gene_list <- sort(gene_list, decreasing = TRUE)
+
+  if (length(gene_list) < 10) {
+    return(list(file = de_csv, ok = FALSE, msg = "[SKIP] too few ranked genes"))
+  }
+
+  # run GSEA (GO BP)
+  set.seed(1)
+  gsea_res <- tryCatch(
+    gseGO(
+      geneList     = gene_list,
+      OrgDb        = org.Hs.eg.db,
+      keyType      = "SYMBOL",
+      ont          = "BP",
+      minGSSize    = 5,
+      pvalueCutoff = 0.05,
+      verbose      = FALSE
+    ),
+    error = function(e) e
+  )
+
+  if (inherits(gsea_res, "error") || is.null(gsea_res)) {
+    return(list(file = de_csv, ok = FALSE, msg = paste0("[FAIL] ", conditionMessage(gsea_res))))
+  }
+
+  gsea_tbl <- as.data.frame(gsea_res) %>% arrange(p.adjust)
+  if (nrow(gsea_tbl) == 0) {
+    return(list(file = de_csv, ok = TRUE, msg = "[SKIP] no enriched pathways (empty result)"))
+  }
+
+  # Keep only significant (you used pvalueCutoff=0.05 already, but be defensive)
+  gsea_tbl_sig <- gsea_tbl %>% filter(p.adjust < 0.1)
+  if (nrow(gsea_tbl_sig) == 0) {
+    return(list(file = de_csv, ok = TRUE, msg = "[SKIP] no enriched pathways (padj<0.1 none)"))
+  }
+
+  # Split into "up" vs "down" by NES sign (recommended way)
+  up_tbl <- gsea_tbl_sig %>% filter(NES > 0) %>% arrange(p.adjust)
+  dn_tbl <- gsea_tbl_sig %>% filter(NES < 0) %>% arrange(p.adjust)
+
+  # If neither direction has rows (unlikely), skip writing
+  if (nrow(up_tbl) == 0 && nrow(dn_tbl) == 0) {
+    return(list(file = de_csv, ok = TRUE, msg = "[SKIP] no NES>0 or NES<0 rows after filtering"))
+  }
+
+  # Create output subdir per celltype ONLY if there is something to write
+  out_dir <- file.path(gsea_root, celltype)
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Write (only if non-empty)
+  wrote <- character()
+
+  if (nrow(up_tbl) > 0) {
+    out_up <- file.path(out_dir, paste0(prefix, "_gsea_UP.csv"))
+    readr::write_csv(up_tbl, out_up)
+    wrote <- c(wrote, basename(out_up))
+  }
+
+  if (nrow(dn_tbl) > 0) {
+    out_dn <- file.path(out_dir, paste0(prefix, "_gsea_DOWN.csv"))
+    readr::write_csv(dn_tbl, out_dn)
+    wrote <- c(wrote, basename(out_dn))
+  }
+
+  list(
+    file = de_csv,
+    ok = TRUE,
+    msg = paste0("[WRITE] ", celltype, " ", compare, " -> ", paste(wrote, collapse = ", "))
+  )
+}
+
+# ----------------------------
+# Parallel run (one DE csv per worker)
+# ----------------------------
+log <- future.apply::future_lapply(
+  csv_files,
+  run_one_gsego,
+  gsea_root = gsea_root,
+  future.seed = TRUE
+)
+
+cat(paste(vapply(log, `[[`, "", "msg"), collapse = "\n"), "\n")
+message("Done. Outputs under: ", gsea_root)
+```
+
+## 4.4 GO overrepresentation
+```{r}
+
+# ---- config ----
+ruv_dir <- here("data", "DE", "RUV_sex")
+out_dir <- here("data", "go_sex")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+workers <- min(20, parallel::detectCores())   # adjust to your quota
+plan(multisession, workers = workers)         # use multicore on linux if you prefer
+
+# ---- find all RUV DE csvs ----
+ruv_csvs <- sort(list.files(ruv_dir, pattern = "\\.csv$", recursive = TRUE, full.names = TRUE))
+ruv_csvs <- ruv_csvs[str_detect(basename(ruv_csvs), "_(CFvsC|CFNvsC|CFBvsC)\\.csv$")]
+
+if (length(ruv_csvs) == 0) stop("No RUV DE CSV files found under: ", ruv_dir)
+
+# ---- worker function: process one DE csv ----
+process_one_ruv_de <- function(de_csv, out_dir) {
+  celltype <- basename(dirname(de_csv))
+  compare  <- str_match(basename(de_csv), "_(CFvsC|CFNvsC|CFBvsC)\\.csv$")[,2]
+
+  de <- readr::read_csv(de_csv, show_col_types = FALSE)
+
+  # guards / cleanup
+  if (!all(c("gene", "logFC") %in% names(de))) {
+    return(list(file = de_csv, ok = FALSE, msg = "Missing gene/logFC columns"))
+  }
+
+  de <- de %>% filter(!is.na(gene), gene != "", !is.na(logFC))
+  if (nrow(de) == 0) {
+    return(list(file = de_csv, ok = FALSE, msg = "Empty after filtering NA/blank genes"))
+  }
+
+  up   <- de %>% filter(logFC > 0) %>% distinct(gene)
+  down <- de %>% filter(logFC < 0) %>% distinct(gene)
+
+  # map SYMBOL -> ENTREZ for just this file
+  genes_all <- unique(de$gene)
+  sym2ent <- AnnotationDbi::mapIds(
+    x = org.Hs.eg.db,
+    keys = genes_all,
+    keytype = "SYMBOL",
+    column = "ENTREZID",
+    multiVals = "first"
+  )
+
+  to_entrez <- function(sym_vec) {
+    entrez <- unname(sym2ent[sym_vec])
+    entrez <- entrez[!is.na(entrez)]
+    unique(entrez)
+  }
+
+  up_entrez       <- to_entrez(up$gene)
+  down_entrez     <- to_entrez(down$gene)
+  universe_entrez <- to_entrez(unique(de$gene))
+
+  if (length(universe_entrez) < 10) {
+    return(list(file = de_csv, ok = FALSE, msg = "Too few mapped universe genes"))
+  }
+
+  # GO BP ORA
+  go.up.bp <- enrichGO(
+    gene          = up_entrez,
+    universe      = universe_entrez,
+    OrgDb         = org.Hs.eg.db,
+    keyType       = "ENTREZID",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    readable      = TRUE
+  )
+
+  go.down.bp <- enrichGO(
+    gene          = down_entrez,
+    universe      = universe_entrez,
+    OrgDb         = org.Hs.eg.db,
+    keyType       = "ENTREZID",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    readable      = TRUE
+  )
+
+  # simplify (only when results exist)
+  if (!is.null(go.up.bp) && nrow(go.up.bp@result) > 0)   go.up.bp <- clusterProfiler::simplify(go.up.bp)
+  if (!is.null(go.down.bp) && nrow(go.down.bp@result) > 0) go.down.bp <- clusterProfiler::simplify(go.down.bp)
+
+  mk_df <- function(go_obj, direction) {
+    if (!is.null(go_obj) && nrow(go_obj@result) > 0) {
+      go_obj@result %>%
+        dplyr::rename(Pathway = Description) %>%
+        dplyr::mutate(
+          Celltype = celltype,
+          Comparison = compare,
+          Direction = direction,
+          Genes = gsub("/", "; ", geneID)
+        ) %>%
+        dplyr::select(Pathway, Celltype, Comparison, Direction, ID, Count, pvalue, p.adjust, Genes) %>%
+        dplyr::slice_head(n = 50)
+    } else {
+      tibble::tibble()
+    }
+  }
+
+  up_df   <- mk_df(go.up.bp, "Up")
+  down_df <- mk_df(go.down.bp, "Down")
+
+  fn_up   <- file.path(out_dir, paste0(celltype, "_", compare, "_GO_BP-up_top50.csv"))
+  fn_down <- file.path(out_dir, paste0(celltype, "_", compare, "_GO_BP-down_top50.csv"))
+
+  readr::write_csv(up_df, fn_up)
+  readr::write_csv(down_df, fn_down)
+
+  list(file = de_csv, ok = TRUE,
+       msg = paste0("Wrote: ", basename(fn_up), " and ", basename(fn_down)))
+}
+
+# ---- parallel run ----
+log <- future.apply::future_lapply(
+  ruv_csvs,
+  process_one_ruv_de,
+  out_dir = out_dir,
+  future.seed = TRUE
+)
+
+cat(paste(vapply(log, `[[`, "", "msg"), collapse = "\n"), "\n")
+message("Done. GO ORA results under: ", out_dir)
+```
+
+
+## 4.5 Pseudobulk gene expression
+### 4.5.1 Plot Function
+```{r}
+# ------------------------------------------------------------
+# Reusable: Plot pseudobulk expression as log2CPM (TMM-normalized)
+# + significance brackets from EXISTING RUVr/edgeR results
+# (NO Wilcoxon)
+# ------------------------------------------------------------
+
+# ----------------------------
+# Read counts helper
+# ----------------------------
+read_counts_csv <- function(path) {
+  dat <- readr::read_csv(path, show_col_types = FALSE)
+  gene_col <- if ("gene" %in% names(dat)) "gene" else if ("Gene" %in% names(dat)) "Gene" else names(dat)[1]
+
+  counts <- dat |>
+    dplyr::select(-dplyr::all_of(gene_col)) |>
+    as.data.frame(check.names = FALSE)
+
+  counts <- as.matrix(sapply(counts, as.numeric))
+  rownames(counts) <- dat[[gene_col]]
+
+  list(counts = counts, gene_col = gene_col)
+}
+
+# ----------------------------
+# Make log2CPM (TMM) once
+# ----------------------------
+make_log2cpm <- function(counts, method = "TMM", prior.count = 1) {
+  counts <- as.matrix(counts)
+  dge <- edgeR::DGEList(counts = counts)
+  dge <- edgeR::calcNormFactors(dge, method = method)
+  edgeR::cpm(dge, log = TRUE, prior.count = prior.count)
+}
+
+# ----------------------------
+# Read DE (RUVr/edgeR) helpers
+# ----------------------------
+read_de_csv <- function(path) {
+  if (!file.exists(path)) stop("DE file not found: ", path)
+  de <- readr::read_csv(path, show_col_types = FALSE)
+
+  gene_col <- if ("gene" %in% names(de)) "gene" else if ("Gene" %in% names(de)) "Gene" else names(de)[1]
+  if (!"adj.P.Val" %in% names(de) && "FDR" %in% names(de)) {
+    de <- de |> dplyr::rename(adj.P.Val = FDR)
+  }
+  if (!"adj.P.Val" %in% names(de)) stop("Cannot find adj.P.Val (or FDR) in: ", path)
+
+  de |>
+    dplyr::rename(gene = dplyr::all_of(gene_col)) |>
+    dplyr::select(gene, dplyr::everything())
+}
+
+# mimic rstatix significance symbols
+p_to_signif <- function(p) {
+  if (is.na(p)) return("ns")
+  if (p <= 0.001) return("***")
+  if (p <= 0.01)  return("**")
+  if (p <= 0.05)  return("*")
+  if (p <= 0.1)   return(".")
+  "ns"
+}
+
+# build pb_df for ONE gene (used for y-position and plotting)
+build_pb_df_for_gene <- function(pb_mat, gene, seu, condition_levels = c("C", "CFB", "CFN")) {
+  if (!gene %in% rownames(pb_mat)) stop("gene '", gene, "' not found in pb_mat rownames")
+
+  meta_df <- seu@meta.data
+  if (!"ID2" %in% colnames(meta_df)) stop("seu@meta.data must contain 'ID2'")
+  if (!"Condition2" %in% colnames(meta_df)) stop("seu@meta.data must contain 'Condition2'")
+
+  gene_col <- paste0(gene, "_expr")
+
+  pb_df <- data.frame(ID2 = colnames(pb_mat), stringsAsFactors = FALSE)
+  pb_df[[gene_col]] <- as.numeric(pb_mat[gene, , drop = TRUE])
+
+  map_df <- meta_df[, c("ID2", "Condition2"), drop = FALSE]
+  map_df <- map_df[!is.na(map_df$ID2) & !is.na(map_df$Condition2), , drop = FALSE]
+
+  id2_to_cond <- tapply(as.character(map_df$Condition2), map_df$ID2, function(x) {
+    ux <- sort(table(x), decreasing = TRUE)
+    names(ux)[1]
+  })
+
+  pb_df$Condition2 <- unname(id2_to_cond[match(pb_df$ID2, names(id2_to_cond))])
+  pb_df$Condition2 <- factor(pb_df$Condition2, levels = condition_levels)
+
+  pb_df
+}
+
+# Build an rstatix-like table for ONE gene (for stat_pvalue_manual)
+make_sig_table_from_ruv <- function(pb_df, gene, de_tbls,
+                                    comparisons = c("CFBvsC", "CFNvsC", "CFBvsCFN"),
+                                    step = 0.5, hide_ns = TRUE) {
+
+  gene_col <- paste0(gene, "_expr")
+  ymax <- max(pb_df[[gene_col]], na.rm = TRUE)
+  if (!is.finite(ymax)) ymax <- 0
+
+  comp_map <- list(
+    CFBvsC   = c("CFB", "C"),
+    CFNvsC   = c("CFN", "C"),
+    CFBvsCFN = c("CFB", "CFN")
+  )
+
+  out <- lapply(seq_along(comparisons), function(i) {
+    nm <- comparisons[i]
+    gpair <- comp_map[[nm]]
+    if (is.null(gpair)) stop("Unknown comparison: ", nm)
+
+    de <- de_tbls[[nm]]
+    if (is.null(de)) stop("Missing DE table for comparison '", nm, "'")
+
+    p_adj <- de$adj.P.Val[match(gene, de$gene)]
+    if (length(p_adj) == 0 || is.na(p_adj)) p_adj <- 1
+
+    data.frame(
+      group1 = gpair[1],
+      group2 = gpair[2],
+      p.adj = as.numeric(p_adj),
+      p.adj.signif = p_to_signif(as.numeric(p_adj)),
+      y.position = ymax + step * i,
+      stringsAsFactors = FALSE
+    )
+  }) |>
+    dplyr::bind_rows()
+
+  if (hide_ns) out <- out |> dplyr::filter(.data$p.adj.signif != "ns")
+  out
+}
+
+# Plot function (no Wilcoxon; uses supplied p-value table)
+plot_pb_gene_ruv <- function(pb_mat, gene, seu, p_tbl = NULL,
+                             pal = NULL, zero_filter = TRUE, dodge_width = 0.8,
+                             ylab = "log2CPM",
+                             condition_levels = c("C", "CFB", "CFN")) {
+
+  pb_df <- build_pb_df_for_gene(pb_mat = pb_mat, gene = gene, seu = seu, condition_levels = condition_levels)
+
+  gene_col <- paste0(gene, "_expr")
+
+  # filtering
+  if (zero_filter) {
+    pb_df <- pb_df[!is.na(pb_df[[gene_col]]) & pb_df[[gene_col]] != 0 & !is.na(pb_df$Condition2), ]
+  } else {
+    pb_df <- pb_df[!is.na(pb_df[[gene_col]]) & !is.na(pb_df$Condition2), ]
+  }
+  if (nrow(pb_df) == 0) stop("No samples available after filtering/matching (check pb_mat colnames are ID2)")
+
+  # palette
+  if (is.null(pal)) {
+    if (exists("Condition2.colours")) pal <- get("Condition2.colours")
+    else if (exists("condition2_cols")) pal <- get("condition2_cols")
+  }
+  if (is.null(pal)) {
+    levs <- levels(pb_df$Condition2)
+    pal <- setNames(RColorBrewer::brewer.pal(3, "Dark2")[seq_along(levs)], levs)
+  }
+
+  p <- ggplot2::ggplot(pb_df, ggplot2::aes(x = Condition2, y = .data[[gene_col]], color = Condition2)) +
+    ggplot2::geom_boxplot(fill = NA, outlier.shape = NA, position = ggplot2::position_dodge(width = dodge_width)) +
+    ggplot2::geom_point(position = ggplot2::position_dodge(width = dodge_width), size = 2, alpha = 0.9) +
+    ggplot2::scale_color_manual(values = pal) +
+    ggplot2::scale_y_continuous(labels = scales::number_format(accuracy = 0.1)) +
+    ggplot2::labs(y = ylab, title = gene) +
+    ggplot2::theme_classic(base_size = 16) +
+    ggplot2::theme(
+      axis.text.x      = ggplot2::element_text(angle = 40, hjust = 1, size = 10, colour = "black"),
+      axis.text.y      = ggplot2::element_text(size = 10, colour = "black"),
+      axis.title.y     = ggplot2::element_text(size = 12),
+      axis.title.x     = ggplot2::element_blank(),
+      axis.line        = ggplot2::element_blank(),
+      panel.border     = ggplot2::element_rect(size = 0.5, fill = "transparent"),
+      legend.position  = "none",
+      plot.title       = ggplot2::element_text(hjust = 0.5, size = 16, face = "italic")
+    )
+
+  if (!is.null(p_tbl) && nrow(p_tbl) > 0) {
+    p <- p + ggpubr::stat_pvalue_manual(
+      p_tbl,
+      label = "p.adj.signif",
+      tip.length = 0.01,
+      bracket.size = 0.4,
+      hide.ns = TRUE
+    )
+  }
+
+  p
+}
+
+# ----------------------------
+# MAIN reusable wrapper you asked for
+# ----------------------------
+plot_pb_genes_ruv_from_disk <- function(
+  celltype,
+  de_base_dir,                 # e.g. here("data","DE","RUV_sex2") OR here("data","DE","bal_ann_lv2")
+  genes,
+  seu,
+  pb_base_dir = here::here("data", "pseudobulk_matrix"),
+  comparisons = c("CFBvsC", "CFNvsC", "CFBvsCFN"),
+  condition_levels = c("C", "CFB", "CFN"),
+  step = 0.5,
+  hide_ns = TRUE,
+  zero_filter = FALSE,
+  ylab = "log2CPM"
+) {
+  if (missing(celltype) || !nzchar(celltype)) stop("celltype must be a non-empty string")
+  if (missing(genes) || length(genes) == 0) stop("genes must be a non-empty character vector")
+  if (missing(seu)) stop("seu is required")
+
+  # auto paths from celltype + base dirs
+  pb_counts_path <- file.path(pb_base_dir, paste0(celltype, "_counts.csv"))
+  if (!file.exists(pb_counts_path)) stop("Pseudobulk counts file not found: ", pb_counts_path)
+
+  de_dir <- file.path(de_base_dir, celltype)
+
+  de_files <- list(
+    CFBvsC   = file.path(de_dir, paste0(celltype, "_CFBvsC.csv")),
+    CFNvsC   = file.path(de_dir, paste0(celltype, "_CFNvsC.csv")),
+    CFBvsCFN = file.path(de_dir, paste0(celltype, "_CFBvsCFN.csv"))
+  )
+
+  # read + normalize
+  obj <- read_counts_csv(pb_counts_path)
+  pb_mat_log2cpm <- make_log2cpm(obj$counts, method = "TMM", prior.count = 1)
+  
+  # ensure output dir exists
+  # write log2CPM matrix (TMM-normalized) for this celltype
+  log2cpm_out_path <- file.path(pb_base_dir, paste0(celltype, "_log2cpm_TMM.csv"))
+  
+  log2cpm_df <- data.frame(
+    gene = rownames(pb_mat_log2cpm),
+    pb_mat_log2cpm,
+    check.names = FALSE
+  )
+  
+  readr::write_csv(log2cpm_df, log2cpm_out_path)
+  message("Wrote log2CPM matrix to: ", log2cpm_out_path)
+
+  # read DE once (only comparisons requested)
+  de_files <- de_files[comparisons]
+  de_tbls <- lapply(de_files, read_de_csv)
+
+  # plots
+  plot_list <- lapply(genes, function(g) {
+    pb_df_tmp <- build_pb_df_for_gene(pb_mat = pb_mat_log2cpm, gene = g, seu = seu, condition_levels = condition_levels)
+    pb_df_tmp <- pb_df_tmp[!is.na(pb_df_tmp[[paste0(g, "_expr")]]) & !is.na(pb_df_tmp$Condition2), , drop = FALSE]
+
+    p_tbl <- make_sig_table_from_ruv(
+      pb_df = pb_df_tmp,
+      gene = g,
+      de_tbls = de_tbls,
+      comparisons = comparisons,
+      step = step,
+      hide_ns = hide_ns
+    )
+
+    plot_pb_gene_ruv(
+      pb_mat = pb_mat_log2cpm,
+      gene = g,
+      seu = seu,
+      p_tbl = p_tbl,
+      zero_filter = zero_filter,
+      ylab = ylab,
+      condition_levels = condition_levels
+    )
+  })
+
+  names(plot_list) <- genes
+  plot_list
+}
+
+```
+
+### 4.5.2 plot
+```{r fig.width=5,fig.height=2.5}
+# plot.list <- plot_pb_genes_ruv_from_disk(
+#   celltype = "CD8T",
+#   pb_base_dir = here::here("data", "pseudobulk_matrix_bal_ann_lv1"),
+#   de_base_dir = here("data", "DE","RUV_bal_ann_lv1"),  # PBMC
+#   genes = genes,
+#   seu = seu.bal
+# )
+
+# ----------------------------
+# PBMC CD14.mono
+# ----------------------------
+genes <- c("GZMK","KLRG1","ITGAE")
+
+plot.list <- plot_pb_genes_ruv_from_disk(
+  celltype = "CD8T",
+  pb_base_dir = here::here("data", "pseudobulk_matrix_bal_ann_lv1"),
+  de_base_dir = here("data", "DE","RUV_bal_ann_lv1"),  # PBMC
+  genes = genes,
+  seu = seu.bal
+)
+
+# (B) Arrange as a nice grid with patchwork
+wrap_plots(plot.list, ncol = 3)
+
+# BAL example:
+# plot.list.cd14.bal <- plot_pb_genes_ruv_from_disk(
+#   celltype = "CD14.mono",
+#   de_base_dir = here::here("data", "DE", "bal_ann_lv2"),
+#   genes = genes,
+#   seu = s
+# )
+# 1) remove per-panel axis titles
+plots <- lapply(plot.list, \(p) {
+  p + theme(axis.title.x = element_blank(),
+            axis.title.y = element_blank())
+})
+
+# 2) make the grid
+pg <- plot_grid(plotlist = plots, ncol = 3, align = "hv")
+
+left_pad <- 0.02  # increase for more space (try 0.08, 0.10)
+
+p_shared <- ggdraw() +
+  # draw the grid shifted right to create a left margin
+  draw_plot(pg, x = left_pad, y = 0, width = 1 - left_pad, height = 1) +
+  # now the y label can sit in that left margin without clipping
+  draw_label("log2CPM", x = 0.02, y = 0.5, angle = 90, vjust = 0.5, size = 12)
+
+p_shared
+
+```
+
+```{r fig.width=10,fig.height=2.5}
+# plot.list <- plot_pb_genes_ruv_from_disk(
+#   celltype = "CD8T",
+#   pb_base_dir = here::here("data", "pseudobulk_matrix_bal_ann_lv1"),
+#   de_base_dir = here("data", "DE","RUV_bal_ann_lv1"),  # PBMC
+#   genes = genes,
+#   seu = seu.bal
+# )
+
+# ----------------------------
+# PBMC CD14.mono
+# ----------------------------
+genes <- c("PLA2G7","SPP1","CHI3L1")
+
+plot.list <- plot_pb_genes_ruv_from_disk(
+  celltype = "MDM-PLA2G7hi",
+  pb_base_dir = here::here("data", "pseudobulk_matrix_bal_ann_lv2"),
+  de_base_dir = here("data", "DE","RUV_bal_ann_lv2"),  # PBMC
+  genes = genes,
+  seu = seu.bal
+)
+
+# (B) Arrange as a nice grid with patchwork
+wrap_plots(plot.list, ncol = 5)
+
+# BAL example:
+# plot.list.cd14.bal <- plot_pb_genes_ruv_from_disk(
+#   celltype = "CD14.mono",
+#   de_base_dir = here::here("data", "DE", "bal_ann_lv2"),
+#   genes = genes,
+#   seu = s
+# )
+# 1) remove per-panel axis titles
+plots <- lapply(plot.list, \(p) {
+  p + theme(axis.title.x = element_blank(),
+            axis.title.y = element_blank())
+})
+
+# 2) make the grid
+pg <- plot_grid(plotlist = plots, ncol = 5, align = "hv")
+
+left_pad <- 0.02  # increase for more space (try 0.08, 0.10)
+
+p_shared <- ggdraw() +
+  # draw the grid shifted right to create a left margin
+  draw_plot(pg, x = left_pad, y = 0, width = 1 - left_pad, height = 1) +
+  # now the y label can sit in that left margin without clipping
+  draw_label("log2CPM", x = 0.02, y = 0.5, angle = 90, vjust = 0.5, size = 12)
+
+p_shared
+
+```
+
+```{r fig.width=12,fig.height=9}
+genes <- c("GZMK","KLRG1","CD27","EOMES","ITGAE")
+
+plot.list <- plot_pb_genes_ruv_from_disk(
+  celltype = "cd8t",
+  pb_base_dir = here::here("data"),
+  de_base_dir = here("data", "DE","RUV_bal_ann_lv1"),  # PBMC
+  genes = genes,
+  seu = seu.bal
+)
+
+# ----------------------------
+# PBMC CD14.mono
+# ----------------------------
+genes <- c("GZMK","KLRG1","CD27","EOMES","ITGAE")
+
+plot.list <- plot_pb_genes_ruv_from_disk(
+  celltype = "CD8T",
+  pb_base_dir = here::here("data", "pseudobulk_matrix"),
+  de_base_dir = here("data", "DE","RUV_bal_ann_lv1"),  # PBMC
+  genes = genes,
+  seu = seu.bal
+)
+
+# (B) Arrange as a nice grid with patchwork
+wrap_plots(plot.list, ncol = 3)
+
+# BAL example:
+# plot.list.cd14.bal <- plot_pb_genes_ruv_from_disk(
+#   celltype = "CD14.mono",
+#   de_base_dir = here::here("data", "DE", "bal_ann_lv2"),
+#   genes = genes,
+#   seu = s
+# )
+# 1) remove per-panel axis titles
+plots <- lapply(plot.list, \(p) {
+  p + theme(axis.title.x = element_blank(),
+            axis.title.y = element_blank())
+})
+
+# 2) make the grid
+pg <- plot_grid(plotlist = plots, ncol = 3, align = "hv")
+
+left_pad <- 0.02  # increase for more space (try 0.08, 0.10)
+
+p_shared <- ggdraw() +
+  # draw the grid shifted right to create a left margin
+  draw_plot(pg, x = left_pad, y = 0, width = 1 - left_pad, height = 1) +
+  # now the y label can sit in that left margin without clipping
+  draw_label("log2CPM", x = 0.02, y = 0.5, angle = 90, vjust = 0.5, size = 12)
+
+p_shared
+```
+
+### 4.5.3 Dot plot
+```{r fig.height=4, fig.width=2}
+# PBMC CD14.mono
+md <- seu.pbmc@meta.data
+cells.keep <- rownames(md)[md$ann_lv2 %in% c("CD14.mono")]
+s <- subset(seu.pbmc, cells = cells.keep)
+s$ann_lv1 <- fct_drop(s$ann_lv1)
+s$ann_lv2 <- fct_drop(s$ann_lv2)
+selected <- c("CXCL8","EREG","SERPINB2","F13A1","CDC42BPA","NRG1")
+
+# BAL cDC
+md <- seu.bal@meta.data
+cells.keep <- rownames(md)[md$ann_lv2 %in% c("cDC")]
+s <- subset(seu.bal, cells = cells.keep)
+s$ann_lv1 <- fct_drop(s$ann_lv1)
+s$ann_lv2 <- fct_drop(s$ann_lv2)
+selected <- c(
+  "CCL4", "CCL3", "CCL2", "CXCL10", "CCL3L1",
+  "IFI6", "IFIT3",
+  "CTSL", "CTSB", "LGMN",
+  "HLA-DQA2",
+  "XCR1", "CLEC9A", "IRF8"
+)
+
+
+p5 <- DotPlot(s,
+        features = selected,
+        group.by = "Condition2",
+        col.max = 3,
+        col.min = 0,
+        dot.scale = 6
+        ) + #coord_flip() +
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  FontSize(y.text = 10, x.text = 8) + 
+  labs(y = element_blank(), x = element_blank()) + 
+  theme(text=element_text(family="Ariel"),
+        axis.text.x = element_text(size=10,
+                                   face="italic",
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        axis.text.y = element_text(size=10),
+        legend.direction="horizontal",
+        legend.position="bottom",
+        legend.justification = "right",
+        legend.box="vertical",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8,family = "Arial"),
+        ) +
+  scale_color_gradient(low = brewer.bugn(9)[1], high=brewer.bugn(9)[8]) +
+  scale_size_continuous(limits = c(0, 100), 
+                        breaks = c(0, 25, 50, 75, 100),
+                        labels=c(0,"",50,"",100)) +
+  guides(size=guide_legend(override.aes=list(shape=21, 
+                                             colour="black", 
+                                             fill="#adb5bd"),
+                                             title="% of exp. cells",
+                                             label.position="bottom",
+                                             title.position="top",
+                                             title.hjust=0.5
+                                             ))
+
+p5$guides$colour$title <- "Mean Expression"
+p5$guides$colour$title.position <- "top"
+p5$guides$colour$title.hjust <- 0.5
+
+suppressWarnings(p5)
+
+```
+
+## 4.6 Pseudobulk % cells expressing genes
+### 4.6.1 Plot Function
+```{r}
+# ------------------------------------------------------------
+# Reusable: Plot pseudobulk % cells expressing a gene
+# (%cells with RAW COUNT > 0)
+# + significance brackets from EXISTING RUVr/edgeR results
+# (NO Wilcoxon)
+# ------------------------------------------------------------
+
+# ----------------------------
+# Read counts helper (unchanged)
+# ----------------------------
+read_counts_csv <- function(path) {
+  dat <- readr::read_csv(path, show_col_types = FALSE)
+  gene_col <- if ("gene" %in% names(dat)) "gene" else if ("Gene" %in% names(dat)) "Gene" else names(dat)[1]
+
+  counts <- dat |>
+    dplyr::select(-dplyr::all_of(gene_col)) |>
+    as.data.frame(check.names = FALSE)
+
+  counts <- as.matrix(sapply(counts, as.numeric))
+  rownames(counts) <- dat[[gene_col]]
+
+  list(counts = counts, gene_col = gene_col)
+}
+
+# ----------------------------
+# Read DE (RUVr/edgeR) helpers (unchanged)
+# ----------------------------
+read_de_csv <- function(path) {
+  if (!file.exists(path)) stop("DE file not found: ", path)
+  de <- readr::read_csv(path, show_col_types = FALSE)
+
+  gene_col <- if ("gene" %in% names(de)) "gene" else if ("Gene" %in% names(de)) "Gene" else names(de)[1]
+  if (!"adj.P.Val" %in% names(de) && "FDR" %in% names(de)) {
+    de <- de |> dplyr::rename(adj.P.Val = FDR)
+  }
+  if (!"adj.P.Val" %in% names(de)) stop("Cannot find adj.P.Val (or FDR) in: ", path)
+
+  de |>
+    dplyr::rename(gene = dplyr::all_of(gene_col)) |>
+    dplyr::select(gene, dplyr::everything())
+}
+
+# mimic rstatix significance symbols (unchanged)
+p_to_signif <- function(p) {
+  if (is.na(p)) return("ns")
+  if (p <= 0.001) return("***")
+  if (p <= 0.01)  return("**")
+  if (p <= 0.05)  return("*")
+  if (p <= 0.1)   return(".")
+  "ns"
+}
+
+# ------------------------------------------------------------------
+# Build pb_df for ONE gene as % expressing based on RAW COUNTS > 0
+# ------------------------------------------------------------------
+build_pb_pct_df_for_gene_raw <- function(pb_counts, gene, seu,
+                                         condition_levels = c("C", "CFB", "CFN"),
+                                         count_cutoff = 0) {
+
+  if (!gene %in% rownames(pb_counts)) stop("gene '", gene, "' not found in pb_counts rownames")
+
+  meta_df <- seu@meta.data
+  if (!"ID2" %in% colnames(meta_df)) stop("seu@meta.data must contain 'ID2'")
+  if (!"Condition2" %in% colnames(meta_df)) stop("seu@meta.data must contain 'Condition2'")
+
+  gene_col <- paste0(gene, "_pct")
+
+  pb_df <- data.frame(ID2 = colnames(pb_counts), stringsAsFactors = FALSE)
+
+  # NOTE: This is "expressing in pseudobulk sample" as binary (count > cutoff) * 100.
+  pb_df[[gene_col]] <- as.numeric(pb_counts[gene, , drop = TRUE] > count_cutoff) * 100
+
+  # map ID2 -> dominant Condition2 (unchanged logic)
+  map_df <- meta_df[, c("ID2", "Condition2"), drop = FALSE]
+  map_df <- map_df[!is.na(map_df$ID2) & !is.na(map_df$Condition2), , drop = FALSE]
+
+  id2_to_cond <- tapply(as.character(map_df$Condition2), map_df$ID2, function(x) {
+    ux <- sort(table(x), decreasing = TRUE)
+    names(ux)[1]
+  })
+
+  pb_df$Condition2 <- unname(id2_to_cond[match(pb_df$ID2, names(id2_to_cond))])
+  pb_df$Condition2 <- factor(pb_df$Condition2, levels = condition_levels)
+
+  pb_df
+}
+
+# ------------------------------------------------------------------
+# Significance table: y-position based on % scale
+# ------------------------------------------------------------------
+make_sig_table_from_ruv_pct <- function(pb_df, gene, de_tbls,
+                                        comparisons = c("CFBvsC", "CFNvsC", "CFBvsCFN"),
+                                        step = 5, hide_ns = TRUE) {
+
+  gene_col <- paste0(gene, "_pct")
+  ymax <- max(pb_df[[gene_col]], na.rm = TRUE)
+  if (!is.finite(ymax)) ymax <- 0
+
+  comp_map <- list(
+    CFBvsC   = c("CFB", "C"),
+    CFNvsC   = c("CFN", "C"),
+    CFBvsCFN = c("CFB", "CFN")
+  )
+
+  out <- lapply(seq_along(comparisons), function(i) {
+    nm <- comparisons[i]
+    gpair <- comp_map[[nm]]
+    if (is.null(gpair)) stop("Unknown comparison: ", nm)
+
+    de <- de_tbls[[nm]]
+    if (is.null(de)) stop("Missing DE table for comparison '", nm, "'")
+
+    p_adj <- de$adj.P.Val[match(gene, de$gene)]
+    if (length(p_adj) == 0 || is.na(p_adj)) p_adj <- 1
+
+    data.frame(
+      group1 = gpair[1],
+      group2 = gpair[2],
+      p.adj = as.numeric(p_adj),
+      p.adj.signif = p_to_signif(as.numeric(p_adj)),
+      y.position = ymax + step * i,
+      stringsAsFactors = FALSE
+    )
+  }) |>
+    dplyr::bind_rows()
+
+  if (hide_ns) out <- out |> dplyr::filter(.data$p.adj.signif != "ns")
+  out
+}
+
+# ------------------------------------------------------------------
+# Plot function: y is % expressing (RAW COUNT > count_cutoff)
+# ------------------------------------------------------------------
+plot_pb_gene_ruv_pct_raw <- function(pb_counts, gene, seu, p_tbl = NULL,
+                                     pal = NULL, zero_filter = FALSE, dodge_width = 0.8,
+                                     ylab = "% samples with count > 0",
+                                     condition_levels = c("C", "CFB", "CFN"),
+                                     count_cutoff = 0) {
+
+  pb_df <- build_pb_pct_df_for_gene_raw(
+    pb_counts = pb_counts, gene = gene, seu = seu,
+    condition_levels = condition_levels,
+    count_cutoff = count_cutoff
+  )
+
+  gene_col <- paste0(gene, "_pct")
+
+  # filtering (keep same structure; note: 0 is meaningful now)
+  if (zero_filter) {
+    pb_df <- pb_df[!is.na(pb_df[[gene_col]]) & pb_df[[gene_col]] != 0 & !is.na(pb_df$Condition2), ]
+  } else {
+    pb_df <- pb_df[!is.na(pb_df[[gene_col]]) & !is.na(pb_df$Condition2), ]
+  }
+  if (nrow(pb_df) == 0) stop("No samples available after filtering/matching (check pb_counts colnames are ID2)")
+
+  # palette (unchanged)
+  if (is.null(pal)) {
+    if (exists("Condition2.colours")) pal <- get("Condition2.colours")
+    else if (exists("condition2_cols")) pal <- get("condition2_cols")
+  }
+  if (is.null(pal)) {
+    levs <- levels(pb_df$Condition2)
+    pal <- setNames(RColorBrewer::brewer.pal(3, "Dark2")[seq_along(levs)], levs)
+  }
+
+  p <- ggplot2::ggplot(pb_df, ggplot2::aes(x = Condition2, y = .data[[gene_col]], color = Condition2)) +
+    ggplot2::geom_boxplot(fill = NA, outlier.shape = NA, position = ggplot2::position_dodge(width = dodge_width)) +
+    ggplot2::geom_point(position = ggplot2::position_dodge(width = dodge_width), size = 2, alpha = 0.9) +
+    ggplot2::scale_color_manual(values = pal) +
+    ggplot2::scale_y_continuous(labels = scales::number_format(accuracy = 1), limits = c(0, 100)) +
+    ggplot2::labs(y = ylab, title = gene) +
+    ggplot2::theme_classic(base_size = 16) +
+    ggplot2::theme(
+      axis.text.x      = ggplot2::element_text(angle = 40, hjust = 1, size = 10, colour = "black"),
+      axis.text.y      = ggplot2::element_text(size = 10, colour = "black"),
+      axis.title.y     = ggplot2::element_text(size = 12),
+      axis.title.x     = ggplot2::element_blank(),
+      axis.line        = ggplot2::element_blank(),
+      panel.border     = ggplot2::element_rect(size = 0.5, fill = "transparent"),
+      legend.position  = "none",
+      plot.title       = ggplot2::element_text(hjust = 0.5, size = 16, face = "bold.italic")
+    )
+
+  if (!is.null(p_tbl) && nrow(p_tbl) > 0) {
+    p <- p + ggpubr::stat_pvalue_manual(
+      p_tbl,
+      label = "p.adj.signif",
+      tip.length = 0.01,
+      bracket.size = 0.4,
+      hide.ns = TRUE
+    )
+  }
+
+  p
+}
+
+# ----------------------------
+# MAIN reusable wrapper (raw count > 0)
+# ----------------------------
+plot_pb_genes_ruv_from_disk_pct_raw <- function(
+  celltype,
+  de_base_dir,
+  genes,
+  seu,
+  pb_base_dir = here::here("data", "pseudobulk_matrix"),
+  comparisons = c("CFBvsC", "CFNvsC", "CFBvsCFN"),
+  condition_levels = c("C", "CFB", "CFN"),
+  step = 5,
+  hide_ns = TRUE,
+  zero_filter = FALSE,
+  ylab = "% samples with count > 0",
+  count_cutoff = 0
+) {
+  if (missing(celltype) || !nzchar(celltype)) stop("celltype must be a non-empty string")
+  if (missing(genes) || length(genes) == 0) stop("genes must be a non-empty character vector")
+  if (missing(seu)) stop("seu is required")
+
+  pb_counts_path <- file.path(pb_base_dir, paste0(celltype, "_counts.csv"))
+  if (!file.exists(pb_counts_path)) stop("Pseudobulk counts file not found: ", pb_counts_path)
+
+  de_dir <- file.path(de_base_dir, celltype)
+
+  de_files <- list(
+    CFBvsC   = file.path(de_dir, paste0(celltype, "_CFBvsC.csv")),
+    CFNvsC   = file.path(de_dir, paste0(celltype, "_CFNvsC.csv")),
+    CFBvsCFN = file.path(de_dir, paste0(celltype, "_CFBvsCFN.csv"))
+  )
+
+  # read RAW counts (no normalization)
+  obj <- read_counts_csv(pb_counts_path)
+  pb_counts <- obj$counts
+
+  # read DE once (only comparisons requested)
+  de_files <- de_files[comparisons]
+  de_tbls <- lapply(de_files, read_de_csv)
+
+  plot_list <- lapply(genes, function(g) {
+    pb_df_tmp <- build_pb_pct_df_for_gene_raw(
+      pb_counts = pb_counts, gene = g, seu = seu,
+      condition_levels = condition_levels,
+      count_cutoff = count_cutoff
+    )
+    pb_df_tmp <- pb_df_tmp[!is.na(pb_df_tmp[[paste0(g, "_pct")]]) & !is.na(pb_df_tmp$Condition2), , drop = FALSE]
+
+    p_tbl <- make_sig_table_from_ruv_pct(
+      pb_df = pb_df_tmp,
+      gene = g,
+      de_tbls = de_tbls,
+      comparisons = comparisons,
+      step = step,
+      hide_ns = hide_ns
+    )
+
+    plot_pb_gene_ruv_pct_raw(
+      pb_counts = pb_counts,
+      gene = g,
+      seu = seu,
+      p_tbl = p_tbl,
+      zero_filter = zero_filter,
+      ylab = ylab,
+      condition_levels = condition_levels,
+      count_cutoff = count_cutoff
+    )
+  })
+
+  names(plot_list) <- genes
+  plot_list
+}
+
+```
+
+### 4.6.2 plot
+```{r fig.width=12,fig.height=9}
+# ----------------------------
+# PBMC CD14.mono
+# ----------------------------
+genes <- c("KLRB1","GZMK","XCL2")
+
+plot.list <- plot_pb_genes_ruv_from_disk_pct(
+  celltype = "CD8T",
+  pb_base_dir = here::here("data", "pseudobulk_matrix_bal_ann_lv1"),
+  de_base_dir = here("data", "DE","RUV_bal_ann_lv1"),  # PBMC
+  genes = genes,
+  seu = seu.bal
+)
+
+# (B) Arrange as a nice grid with patchwork
+wrap_plots(plot.list, ncol = 3)
+
+# BAL example:
+# plot.list.cd14.bal <- plot_pb_genes_ruv_from_disk(
+#   celltype = "CD14.mono",
+#   de_base_dir = here::here("data", "DE", "bal_ann_lv2"),
+#   genes = genes,
+#   seu = s
+# )
+# 1) remove per-panel axis titles
+plots <- lapply(plot.list, \(p) {
+  p + theme(axis.title.x = element_blank(),
+            axis.title.y = element_blank())
+})
+
+# 2) make the grid
+pg <- plot_grid(plotlist = plots, ncol = 3, align = "hv")
+
+left_pad <- 0.02  # increase for more space (try 0.08, 0.10)
+
+p_shared <- ggdraw() +
+  # draw the grid shifted right to create a left margin
+  draw_plot(pg, x = left_pad, y = 0, width = 1 - left_pad, height = 1) +
+  # now the y label can sit in that left margin without clipping
+  draw_label("log2CPM", x = 0.02, y = 0.5, angle = 90, vjust = 0.5, size = 12)
+
+p_shared
+```
+
+### 4.6.3 Dot plot
+```{r fig.height=4, fig.width=2}
+# PBMC CD14.mono
+md <- seu.pbmc@meta.data
+cells.keep <- rownames(md)[md$ann_lv2 %in% c("CD14.mono")]
+s <- subset(seu.pbmc, cells = cells.keep)
+s$ann_lv1 <- fct_drop(s$ann_lv1)
+s$ann_lv2 <- fct_drop(s$ann_lv2)
+selected <- c("CXCL8","EREG","SERPINB2","F13A1","CDC42BPA","NRG1")
+
+# BAL cDC
+md <- seu.bal@meta.data
+cells.keep <- rownames(md)[md$ann_lv2 %in% c("cDC")]
+s <- subset(seu.bal, cells = cells.keep)
+s$ann_lv1 <- fct_drop(s$ann_lv1)
+s$ann_lv2 <- fct_drop(s$ann_lv2)
+selected <- c(
+  "CCL4", "CCL3", "CCL2", "CXCL10", "CCL3L1",
+  "IFI6", "IFIT3",
+  "CTSL", "CTSB", "LGMN",
+  "HLA-DQA2",
+  "XCR1", "CLEC9A", "IRF8"
+)
+
+
+p5 <- DotPlot(s,
+        features = selected,
+        group.by = "Condition2",
+        col.max = 3,
+        col.min = 0,
+        dot.scale = 6
+        ) + #coord_flip() +
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5) +
+  FontSize(y.text = 10, x.text = 8) + 
+  labs(y = element_blank(), x = element_blank()) + 
+  theme(text=element_text(family="Ariel"),
+        axis.text.x = element_text(size=10,
+                                   face="italic",
+                                   angle = 45,
+                                   hjust = 1,
+                                   vjust = 1),
+        axis.text.y = element_text(size=10),
+        legend.direction="horizontal",
+        legend.position="bottom",
+        legend.justification = "right",
+        legend.box="vertical",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8,family = "Arial"),
+        ) +
+  scale_color_gradient(low = brewer.bugn(9)[1], high=brewer.bugn(9)[8]) +
+  scale_size_continuous(limits = c(0, 100), 
+                        breaks = c(0, 25, 50, 75, 100),
+                        labels=c(0,"",50,"",100)) +
+  guides(size=guide_legend(override.aes=list(shape=21, 
+                                             colour="black", 
+                                             fill="#adb5bd"),
+                                             title="% of exp. cells",
+                                             label.position="bottom",
+                                             title.position="top",
+                                             title.hjust=0.5
+                                             ))
+
+p5$guides$colour$title <- "Mean Expression"
+p5$guides$colour$title.position <- "top"
+p5$guides$colour$title.hjust <- 0.5
+
+suppressWarnings(p5)
+
+```
+
+
+
+# 5 Save figures
+```{r}
+celltype <- "PBMC_CD14.mono"
+out <- here("data","plots",celltype)
+if(!dir.exists(out)) {
+  dir.create(out,recursive = TRUE)
+}
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+
+# CXCL8 box plot (PBMC)
+for (p in names(plot.list.cd14)) {
+  ggsave(plot=plot.list.cd14[[p]] + theme(plot.tag = element_text(size = 14, face = "bold", family="Arial")),
+         device="jpeg",
+         dpi=1600,
+         filename = paste0(out,"/",paste0("pbmc_CD14.mono_",p,"_boxplot.jpeg")),
+         height=4,
+         width=3.5)
+}
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+
+ggplot2::ggsave(
+  device="jpeg",
+  filename = paste0(out,"/",paste0("DEG_boxplot_PBMC_CD14.mono.jpeg")),
+  plot = p_shared,
+  width = 8, 
+  height = 6, 
+  dpi = 1600
+)
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+celltype <- "BAL_CD8T"
+out <- here("data","plots",celltype)
+if(!dir.exists(out)) {
+  dir.create(out,recursive = TRUE)
+}
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+
+ggplot2::ggsave(
+  device="jpeg",
+  filename = paste0(out,"/",paste0("DEG_boxplot_BAL_CD8T.jpeg")),
+  plot = p_shared,
+  width = 6, 
+  height = 2.5, 
+  dpi = 1600
+)
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+
+
+celltype <- "Tcell"
+out <- here("data","plots",celltype)
+if(!dir.exists(out)) {
+  dir.create(out,recursive = TRUE)
+}
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+
+# test set dotplot 
+layout = "AA\nBB"
+p1 + p2 +
+  plot_layout(design = layout) +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","ttest_dotplot.jpeg"),
+       height=6,
+       width=6)
+
+# T test umap grouped by Naive Bayes classifier
+p8 +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","ttest_umap.jpeg"),
+       height=3,
+       width=8)
+
+# T cell umap grouped by Naive Bayes classifier
+p3 +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","T_umap.jpeg"),
+       height=3,
+       width=8)
+
+# merged set dotplot 
+layout = "AA\nBB"
+p4 + p5 +
+  plot_layout(design = layout) +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","T_dotplot.jpeg"),
+       height=6,
+       width=6)
+
+# feature plot (BAL)
+p6 +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","balT_featureplot.jpeg"),
+       height=8,
+       width=12)
+
+# feature plot (PBMC)
+p7 +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","pbmcT_featureplot.jpeg"),
+       height=8,
+       width=12)
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+```
+
+
+# 6 Save object
+```{r}
+date <- Sys.Date()
+out <- here("data","SCEs","analysis",paste0("analysis_",date,".SEU.qs")) # 2025-12-22
+qsave(seu,file=out,nthreads=24)
+
+```

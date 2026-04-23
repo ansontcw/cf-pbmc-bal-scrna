@@ -1,0 +1,145 @@
+---
+title: "Combine PBMC pools into one object"
+author:
+- name: Anson Wong
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+description: null
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()
+
+```
+
+# 1 Load packages
+
+```{r}
+suppressPackageStartupMessages({
+library(SingleCellExperiment)
+library(Seurat)
+library(here)
+library(qs)
+})
+set.seed(1990)
+
+```
+
+# 2 Load data
+
+```{r}
+# load preprocessed objects
+sce1 <- qread(here("data","SCEs","preprocessed",paste0("PP1.preprocessed.SCE.qs")),nthreads=16)
+sce2 <- qread(here("data","SCEs","preprocessed",paste0("PP2.preprocessed.SCE.qs")),nthreads=16)
+sceLst <- qread(here("data","SCEs","preprocessed",paste0("Pcap.preprocessed.sceLst.qs")),nthreads=16)
+sce3 <- sceLst$M1C191B
+sceLst <- NULL
+```
+
+# 3 Convert to Seurat object
+## 3.1 Read objects
+```{r}
+# set counts and gene names
+counts <- counts(sce1)
+rownames(counts) <- rowData(sce1)$Symbol
+seu1 <- CreateSeuratObject(counts=counts,
+                           meta.data = data.frame(colData(sce1)))
+counts <- counts(sce2)
+rownames(counts) <- rowData(sce2)$Symbol
+seu2 <- CreateSeuratObject(counts=counts,
+                           meta.data = data.frame(colData(sce2)))
+counts <- counts(sce3)
+rownames(counts) <- rowData(sce3)$Symbol
+seu3 <- CreateSeuratObject(counts=counts,
+                           meta.data = data.frame(colData(sce3)))
+
+counts <- NULL
+
+# add experiment ID to metadata
+seu1 <- AddMetaData(seu1, factor("A"), col.name = "batchID")
+seu2 <- AddMetaData(seu2, factor("B"), col.name = "batchID")
+seu3 <- AddMetaData(seu3, factor("C"), col.name = "batchID")
+
+# add feature data frame
+seu1[["RNA"]]@meta.features <- data.frame(rowData(sce1))
+seu2[["RNA"]]@meta.features <- data.frame(rowData(sce2))
+seu3[["RNA"]]@meta.features <- data.frame(rowData(sce3))
+```
+
+## 3.2 Unify and re-arrange metadata columns in M1C191B
+```{r}
+# check metadata columns from each object
+dim(seu1@meta.data)
+dim(seu2@meta.data)
+dim(seu3@meta.data)
+
+# As M1C191B was captured independently (as a separate batch), no demultiplexing steps required. 
+# To unify the metadata across three batches:
+# look for columns found in pooled PBMC object but not in M1C191B
+md <- c(setdiff(colnames(seu1@meta.data),colnames(seu3@meta.data)))
+
+# create columns in M1C191B object
+for (m in md) {
+  message(m)
+  seu3 <- AddMetaData(seu3, factor("N"), col.name = m)
+}
+
+# re-arrange metadata columns
+seu3@meta.data <- seu3@meta.data[,colnames(seu1@meta.data)]
+
+setdiff(colnames(seu1@meta.data),colnames(seu3@meta.data))
+
+dim(seu3@meta.data)
+```
+
+# 4 Combine Seurat objects
+
+```{r}
+seu <- merge(
+  seu1,
+  y=c(seu2,seu3),
+  add.cell.ids = c("A","B","C"),
+  project="PBMC")
+
+```
+
+# 7 Remove low-abundance genes (expressed in less than 3 cells)
+
+```{r}
+dim(seu)
+
+# Output a logical vector for every gene on whether the more than zero counts per cell
+# Extract counts
+counts <- GetAssayData(seu, slot = "counts")
+
+# Output a logical vector for every gene on whether the more than zero counts per cell
+nonzero <- counts > 0
+
+# Sums all TRUE values and returns TRUE if more than 3 TRUE values per gene
+keep_genes <- Matrix::rowSums(nonzero) >= 3
+
+# Only keeping those genes expressed in more than 10 cells
+filtered_counts <- counts[keep_genes, ]
+
+# Reassign to filtered Seurat object
+seu.filtered <- CreateSeuratObject(filtered_counts, meta.data = seu@meta.data)
+
+dim(seu.filtered)
+```
+
+# 6 Save objects
+
+```{r}
+out <- here("data",
+            "SCEs",
+            "preprocessed",
+            "pbmc.preprocessed.SEU.qs")
+
+if(!file.exists(out)) qsave(seu.filtered, out, nthreads=16)
+
+```

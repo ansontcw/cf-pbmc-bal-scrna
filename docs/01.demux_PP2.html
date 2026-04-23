@@ -1,0 +1,2537 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+
+
+<meta name="date" content="2026-04-23" />
+
+<title>Demultiplexing the PBMC pool: PP2</title>
+
+<script src="site_libs/header-attrs-2.26/header-attrs.js"></script>
+<script src="site_libs/jquery-3.6.0/jquery-3.6.0.min.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link href="site_libs/bootstrap-3.3.5/css/cosmo.min.css" rel="stylesheet" />
+<script src="site_libs/bootstrap-3.3.5/js/bootstrap.min.js"></script>
+<script src="site_libs/bootstrap-3.3.5/shim/html5shiv.min.js"></script>
+<script src="site_libs/bootstrap-3.3.5/shim/respond.min.js"></script>
+<style>h1 {font-size: 34px;}
+       h1.title {font-size: 38px;}
+       h2 {font-size: 30px;}
+       h3 {font-size: 24px;}
+       h4 {font-size: 18px;}
+       h5 {font-size: 16px;}
+       h6 {font-size: 12px;}
+       code {color: inherit; background-color: rgba(0, 0, 0, 0.04);}
+       pre:not([class]) { background-color: white }</style>
+<script src="site_libs/jqueryui-1.13.2/jquery-ui.min.js"></script>
+<link href="site_libs/tocify-1.9.1/jquery.tocify.css" rel="stylesheet" />
+<script src="site_libs/tocify-1.9.1/jquery.tocify.js"></script>
+<script src="site_libs/navigation-1.1/tabsets.js"></script>
+<link href="site_libs/highlightjs-9.12.0/textmate.css" rel="stylesheet" />
+<script src="site_libs/highlightjs-9.12.0/highlight.js"></script>
+<link href="site_libs/panelset-0.2.6/panelset.css" rel="stylesheet" />
+<script src="site_libs/panelset-0.2.6/panelset.js"></script>
+
+<link rel="icon" href="https://github.com/workflowr/workflowr-assets/raw/main/img/reproducible.png">
+<!-- Add a small amount of space between sections. -->
+<style type="text/css">
+div.section {
+  padding-top: 12px;
+}
+</style>
+
+
+
+<style type="text/css">
+  code{white-space: pre-wrap;}
+  span.smallcaps{font-variant: small-caps;}
+  span.underline{text-decoration: underline;}
+  div.column{display: inline-block; vertical-align: top; width: 50%;}
+  div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+  ul.task-list{list-style: none;}
+    </style>
+
+<style type="text/css">code{white-space: pre;}</style>
+<script type="text/javascript">
+if (window.hljs) {
+  hljs.configure({languages: []});
+  hljs.initHighlightingOnLoad();
+  if (document.readyState && document.readyState === "complete") {
+    window.setTimeout(function() { hljs.initHighlighting(); }, 0);
+  }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<style type = "text/css">
+.main-container {
+  max-width: 940px;
+  margin-left: auto;
+  margin-right: auto;
+}
+img {
+  max-width:100%;
+}
+.tabbed-pane {
+  padding-top: 12px;
+}
+.html-widget {
+  margin-bottom: 20px;
+}
+button.code-folding-btn:focus {
+  outline: none;
+}
+summary {
+  display: list-item;
+}
+details > summary > p:only-child {
+  display: inline;
+}
+pre code {
+  padding: 0;
+}
+</style>
+
+
+<style type="text/css">
+.dropdown-submenu {
+  position: relative;
+}
+.dropdown-submenu>.dropdown-menu {
+  top: 0;
+  left: 100%;
+  margin-top: -6px;
+  margin-left: -1px;
+  border-radius: 0 6px 6px 6px;
+}
+.dropdown-submenu:hover>.dropdown-menu {
+  display: block;
+}
+.dropdown-submenu>a:after {
+  display: block;
+  content: " ";
+  float: right;
+  width: 0;
+  height: 0;
+  border-color: transparent;
+  border-style: solid;
+  border-width: 5px 0 5px 5px;
+  border-left-color: #cccccc;
+  margin-top: 5px;
+  margin-right: -10px;
+}
+.dropdown-submenu:hover>a:after {
+  border-left-color: #adb5bd;
+}
+.dropdown-submenu.pull-left {
+  float: none;
+}
+.dropdown-submenu.pull-left>.dropdown-menu {
+  left: -100%;
+  margin-left: 10px;
+  border-radius: 6px 0 6px 6px;
+}
+</style>
+
+<script type="text/javascript">
+// manage active state of menu based on current page
+$(document).ready(function () {
+  // active menu anchor
+  href = window.location.pathname
+  href = href.substr(href.lastIndexOf('/') + 1)
+  if (href === "")
+    href = "index.html";
+  var menuAnchor = $('a[href="' + href + '"]');
+
+  // mark the anchor link active (and if it's in a dropdown, also mark that active)
+  var dropdown = menuAnchor.closest('li.dropdown');
+  if (window.bootstrap) { // Bootstrap 4+
+    menuAnchor.addClass('active');
+    dropdown.find('> .dropdown-toggle').addClass('active');
+  } else { // Bootstrap 3
+    menuAnchor.parent().addClass('active');
+    dropdown.addClass('active');
+  }
+
+  // Navbar adjustments
+  var navHeight = $(".navbar").first().height() + 15;
+  var style = document.createElement('style');
+  var pt = "padding-top: " + navHeight + "px; ";
+  var mt = "margin-top: -" + navHeight + "px; ";
+  var css = "";
+  // offset scroll position for anchor links (for fixed navbar)
+  for (var i = 1; i <= 6; i++) {
+    css += ".section h" + i + "{ " + pt + mt + "}\n";
+  }
+  style.innerHTML = "body {" + pt + "padding-bottom: 40px; }\n" + css;
+  document.head.appendChild(style);
+});
+</script>
+
+<!-- tabsets -->
+
+<style type="text/css">
+.tabset-dropdown > .nav-tabs {
+  display: inline-table;
+  max-height: 500px;
+  min-height: 44px;
+  overflow-y: auto;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.tabset-dropdown > .nav-tabs > li.active:before, .tabset-dropdown > .nav-tabs.nav-tabs-open:before {
+  content: "\e259";
+  font-family: 'Glyphicons Halflings';
+  display: inline-block;
+  padding: 10px;
+  border-right: 1px solid #ddd;
+}
+
+.tabset-dropdown > .nav-tabs.nav-tabs-open > li.active:before {
+  content: "\e258";
+  font-family: 'Glyphicons Halflings';
+  border: none;
+}
+
+.tabset-dropdown > .nav-tabs > li.active {
+  display: block;
+}
+
+.tabset-dropdown > .nav-tabs > li > a,
+.tabset-dropdown > .nav-tabs > li > a:focus,
+.tabset-dropdown > .nav-tabs > li > a:hover {
+  border: none;
+  display: inline-block;
+  border-radius: 4px;
+  background-color: transparent;
+}
+
+.tabset-dropdown > .nav-tabs.nav-tabs-open > li {
+  display: block;
+  float: none;
+}
+
+.tabset-dropdown > .nav-tabs > li {
+  display: none;
+}
+</style>
+
+<!-- code folding -->
+
+
+
+<style type="text/css">
+
+#TOC {
+  margin: 25px 0px 20px 0px;
+}
+@media (max-width: 768px) {
+#TOC {
+  position: relative;
+  width: 100%;
+}
+}
+
+@media print {
+.toc-content {
+  /* see https://github.com/w3c/csswg-drafts/issues/4434 */
+  float: right;
+}
+}
+
+.toc-content {
+  padding-left: 30px;
+  padding-right: 40px;
+}
+
+div.main-container {
+  max-width: 1200px;
+}
+
+div.tocify {
+  width: 20%;
+  max-width: 260px;
+  max-height: 85%;
+}
+
+@media (min-width: 768px) and (max-width: 991px) {
+  div.tocify {
+    width: 25%;
+  }
+}
+
+@media (max-width: 767px) {
+  div.tocify {
+    width: 100%;
+    max-width: none;
+  }
+}
+
+.tocify ul, .tocify li {
+  line-height: 20px;
+}
+
+.tocify-subheader .tocify-item {
+  font-size: 0.90em;
+}
+
+.tocify .list-group-item {
+  border-radius: 0px;
+}
+
+
+</style>
+
+
+
+</head>
+
+<body>
+
+
+<div class="container-fluid main-container">
+
+
+<!-- setup 3col/9col grid for toc_float and main content  -->
+<div class="row">
+<div class="col-xs-12 col-sm-4 col-md-3">
+<div id="TOC" class="tocify">
+</div>
+</div>
+
+<div class="toc-content col-xs-12 col-sm-8 col-md-9">
+
+
+
+
+<div class="navbar navbar-default  navbar-fixed-top" role="navigation">
+  <div class="container">
+    <div class="navbar-header">
+      <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-bs-toggle="collapse" data-target="#navbar" data-bs-target="#navbar">
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+      </button>
+      <a class="navbar-brand" href="index.html">cf-pbmc-bal-scrna</a>
+    </div>
+    <div id="navbar" class="navbar-collapse collapse">
+      <ul class="nav navbar-nav">
+        <li>
+  <a href="index.html">Home</a>
+</li>
+<li>
+  <a href="about.html">About</a>
+</li>
+<li>
+  <a href="license.html">License</a>
+</li>
+      </ul>
+      <ul class="nav navbar-nav navbar-right">
+        
+      </ul>
+    </div><!--/.nav-collapse -->
+  </div><!--/.container -->
+</div><!--/.navbar -->
+
+<div id="header">
+
+
+
+<h1 class="title toc-ignore">Demultiplexing the PBMC pool: PP2</h1>
+<h4 class="author">Anson Wong</h4>
+<h4 class="date">2026-04-23</h4>
+
+</div>
+
+
+<p>
+<button type="button" class="btn btn-default btn-workflowr btn-workflowr-report" data-toggle="collapse" data-target="#workflowr-report">
+<span class="glyphicon glyphicon-list" aria-hidden="true"></span> workflowr <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span>
+</button>
+</p>
+<div id="workflowr-report" class="collapse">
+<ul class="nav nav-tabs">
+<li class="active">
+<a data-toggle="tab" href="#summary">Summary</a>
+</li>
+<li>
+<a data-toggle="tab" href="#checks"> Checks <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> </a>
+</li>
+<li>
+<a data-toggle="tab" href="#versions">Past versions</a>
+</li>
+</ul>
+<div class="tab-content">
+<div id="summary" class="tab-pane fade in active">
+<p>
+<strong>Last updated:</strong> 2026-04-23
+</p>
+<p>
+<strong>Checks:</strong> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> 7 <span class="glyphicon glyphicon-exclamation-sign text-danger" aria-hidden="true"></span> 0
+</p>
+<p>
+<strong>Knit directory:</strong> <code>cf-pbmc-bal-scrna/</code> <span class="glyphicon glyphicon-question-sign" aria-hidden="true" title="This is the local directory in which the code in this file was executed."> </span>
+</p>
+<p>
+This reproducible <a href="https://rmarkdown.rstudio.com">R Markdown</a> analysis was created with <a
+  href="https://github.com/workflowr/workflowr">workflowr</a> (version 1.7.0). The <em>Checks</em> tab describes the reproducibility checks that were applied when the results were created. The <em>Past versions</em> tab lists the development history.
+</p>
+<hr>
+</div>
+<div id="checks" class="tab-pane fade">
+<div id="workflowr-checks" class="panel-group">
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongRMarkdownfilestronguptodate"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>R Markdown file:</strong> up-to-date </a>
+</p>
+</div>
+<div id="strongRMarkdownfilestronguptodate" class="panel-collapse collapse">
+<div class="panel-body">
+<p>Great! Since the R Markdown file has been committed to the Git repository, you know the exact version of the code that produced these results.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongEnvironmentstrongempty"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>Environment:</strong> empty </a>
+</p>
+</div>
+<div id="strongEnvironmentstrongempty" class="panel-collapse collapse">
+<div class="panel-body">
+<p>Great job! The global environment was empty. Objects defined in the global environment can affect the analysis in your R Markdown file in unknown ways. For reproduciblity it’s best to always run the code in an empty environment.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongSeedstrongcodesetseed20260423code"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>Seed:</strong> <code>set.seed(20260423)</code> </a>
+</p>
+</div>
+<div id="strongSeedstrongcodesetseed20260423code" class="panel-collapse collapse">
+<div class="panel-body">
+<p>The command <code>set.seed(20260423)</code> was run prior to running the code in the R Markdown file. Setting a seed ensures that any results that rely on randomness, e.g. subsampling or permutations, are reproducible.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongSessioninformationstrongrecorded"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>Session information:</strong> recorded </a>
+</p>
+</div>
+<div id="strongSessioninformationstrongrecorded" class="panel-collapse collapse">
+<div class="panel-body">
+<p>Great job! Recording the operating system, R version, and package versions is critical for reproducibility.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongCachestrongnone"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>Cache:</strong> none </a>
+</p>
+</div>
+<div id="strongCachestrongnone" class="panel-collapse collapse">
+<div class="panel-body">
+<p>Nice! There were no cached chunks for this analysis, so you can be confident that you successfully produced the results during this run.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongFilepathsstrongrelative"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>File paths:</strong> relative </a>
+</p>
+</div>
+<div id="strongFilepathsstrongrelative" class="panel-collapse collapse">
+<div class="panel-body">
+<p>Great job! Using relative paths to the files within your workflowr project makes it easier to run your code on other machines.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongRepositoryversionstrongahrefhttpsgithubcomansontcwcfpbmcbalscrnatree16fd55244ce9ff112b9cec581e7c2c8652504c99targetblank16fd552a"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>Repository version:</strong> <a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/tree/16fd55244ce9ff112b9cec581e7c2c8652504c99" target="_blank">16fd552</a> </a>
+</p>
+</div>
+<div id="strongRepositoryversionstrongahrefhttpsgithubcomansontcwcfpbmcbalscrnatree16fd55244ce9ff112b9cec581e7c2c8652504c99targetblank16fd552a" class="panel-collapse collapse">
+<div class="panel-body">
+<p>
+Great! You are using Git for version control. Tracking code development and connecting the code version to the results is critical for reproducibility.
+</p>
+<p>
+The results in this page were generated with repository version <a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/tree/16fd55244ce9ff112b9cec581e7c2c8652504c99" target="_blank">16fd552</a>. See the <em>Past versions</em> tab to see a history of the changes made to the R Markdown and HTML files.
+</p>
+<p>
+Note that you need to be careful to ensure that all relevant files for the analysis have been committed to Git prior to generating the results (you can use <code>wflow_publish</code> or <code>wflow_git_commit</code>). workflowr only checks the R Markdown file, but you know if there are other scripts or data files that it depends on. Below is the status of the Git repository when the results were generated:
+</p>
+<pre><code>
+Ignored files:
+    Ignored:    .DS_Store
+
+Untracked files:
+    Untracked:  ._.DS_Store
+    Untracked:  data/SCEs
+    Untracked:  data/cellbender
+    Untracked:  data/cytokine
+    Untracked:  data/plots
+    Untracked:  data/sample_sheets
+    Untracked:  data/vireo
+    Untracked:  notebooks/
+
+</code></pre>
+<p>
+Note that any generated files, e.g. HTML, png, CSS, etc., are not included in this status report because it is ok for generated content to have uncommitted changes.
+</p>
+</div>
+</div>
+</div>
+</div>
+<hr>
+</div>
+<div id="versions" class="tab-pane fade">
+
+<p>
+These are the previous versions of the repository in which changes were made to the R Markdown (<code>analysis/01.demux_PP2.Rmd</code>) and HTML (<code>docs/01.demux_PP2.html</code>) files. If you’ve configured a remote Git repository (see <code>?wflow_git_remote</code>), click on the hyperlinks in the table below to view the files as they were in that past version.
+</p>
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+File
+</th>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+<th>
+Message
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+Rmd
+</td>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/analysis/01.demux_PP2.Rmd" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+<td>
+Sync local analysis and docs and code
+</td>
+</tr>
+<tr>
+<td>
+html
+</td>
+<td>
+<a href="https://rawcdn.githack.com/ansontcw/cf-pbmc-bal-scrna/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/01.demux_PP2.html" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+<td>
+Sync local analysis and docs and code
+</td>
+</tr>
+<tr>
+<td>
+html
+</td>
+<td>
+<a href="https://rawcdn.githack.com/ansontcw/cf-pbmc-bal-scrna/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/01.demux_PP2.html" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+<td>
+Build site.
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<hr>
+</div>
+</div>
+</div>
+<pre class="r"><code>knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()</code></pre>
+<div id="load-packages" class="section level1">
+<h1>1 Load packages</h1>
+<pre class="r"><code>suppressPackageStartupMessages({
+library(DropletUtils)
+library(here)
+library(ggplot2)
+library(Seurat)
+library(cowplot)
+library(patchwork)
+library(scater)
+library(dplyr)
+library(vcfR)
+library(janitor)
+library(stringr)
+})
+set.seed(1990)</code></pre>
+</div>
+<div id="set-names-for-this-pool" class="section level1">
+<h1>2 Set names for this pool</h1>
+<pre class="r"><code># Specify batch name
+batch_name &lt;- &quot;PP2&quot;
+num_of_captures &lt;- 3
+
+# Specify capture name
+capture_names &lt;- c(paste0(batch_name, &quot;-c&quot;,1:num_of_captures))
+capture_names &lt;- setNames(capture_names, capture_names)
+
+# Assign sample ID to HTO ID
+# Manually list sample names matching HTO id (in alphabetical order)
+samples &lt;- c(&quot;M1C180D&quot;, #HTO3
+             &quot;M1C209A&quot;, #HTO6
+             &quot;M1C196B&quot;, #HTO7
+             &quot;eAIR003&quot;, #HTO8
+             &quot;eAIR005&quot;, #HTO10
+             &quot;eAIR027&quot;, #HTO12
+             &quot;M1C201A&quot;, #HTO15
+             &quot;M1C176C&quot; #HTO16
+             )</code></pre>
+</div>
+<div id="read-cellbender-outputs" class="section level1">
+<h1>3 Read CellBender outputs</h1>
+<p>Ambient RNA and empty droplets were removed by CellBender (see code/cellbender.sh).</p>
+<pre class="r"><code>captures &lt;- setNames(
+  here(&quot;data&quot;,
+       &quot;cellbender&quot;,
+       capture_names,
+       paste0(capture_names,&quot;.cellbender_filtered.h5&quot;)),
+  capture_names)
+
+sce &lt;- read10xCounts(samples = captures, col.names = TRUE)
+stopifnot(!anyDuplicated(colnames(sce)))
+
+sce &lt;- splitAltExps(
+  sce,
+  rowData(sce)$Type,
+  &quot;Gene Expression&quot;)
+
+# Tidy up colData
+sce$Capture &lt;- factor(sce$Sample)
+capture_names &lt;- levels(sce$Capture)
+capture_names &lt;- setNames(capture_names, capture_names)
+sce$Sample &lt;- NULL
+
+# Number of droplets after CellBender
+dim(sce)</code></pre>
+<pre><code>[1] 36601 78866</code></pre>
+</div>
+<div id="hto-demultiplexing" class="section level1">
+<h1>4 HTO demultiplexing</h1>
+<p>HTODemux from the Seurat package was used to demultiplex droplets. Demultiplexing was performed separately on each capture.</p>
+<div id="prepare-hto-data" class="section level2">
+<h2>4.1 Prepare HTO data</h2>
+<pre class="r"><code># change DelayedMatrix to dgCMatrix
+assay(sce, &quot;counts&quot;) &lt;- as(assay(sce, &quot;counts&quot;), &quot;dgCMatrix&quot;)
+
+# Read features.csv used in cellranger multi
+features &lt;- read.csv(here(&quot;data&quot;,
+                          &quot;sample_sheets&quot;,
+                          paste0(batch_name,&quot;.features.csv&quot;)))
+
+# HTO id are always in alphabetical order
+features</code></pre>
+<pre><code>            id         name read pattern        sequence     feature_type
+1  Human_HTO_3  Human_HTO_3   R2  5P(BC) TTCCGCCTCTCTTTG Antibody Capture
+2  Human_HTO_6  Human_HTO_6   R2  5P(BC) GGTTGCCAGATGTCA Antibody Capture
+3  Human_HTO_7  Human_HTO_7   R2  5P(BC) TGTCTTTCCTGCCAG Antibody Capture
+4  Human_HTO_8  Human_HTO_8   R2  5P(BC) CTCCTCTGCAATTAC Antibody Capture
+5 Human_HTO_10 Human_HTO_10   R2  5P(BC) ATTGACCCGCGTTAG Antibody Capture
+6 Human_HTO_12 Human_HTO_12   R2  5P(BC) TAACGACCAGCCATA Antibody Capture
+7 Human_HTO_15 Human_HTO_15   R2  5P(BC) TAAGATTCAGAGCGA Antibody Capture
+8 Human_HTO_16 Human_HTO_16   R2  5P(BC) CTCAGTGCATTCTGG Antibody Capture</code></pre>
+<pre class="r"><code># Rename assay
+is_hto &lt;- grepl(&quot;^Human_HTO&quot;, rownames(altExp(sce, &quot;Antibody Capture&quot;)))
+altExp(sce, &quot;HTO&quot;) &lt;- altExp(sce, &quot;Antibody Capture&quot;)[is_hto, ]
+altExp(sce, &quot;Antibody Capture&quot;) &lt;- NULL</code></pre>
+</div>
+<div id="hto-demultiplexing-1" class="section level2">
+<h2>4.2 HTO Demultiplexing</h2>
+<pre class="r"><code># load in umi and hto matrix
+umis &lt;- counts(sce)
+htos &lt;- counts(altExp(sce))
+
+# Select cell barcodes detected by both RNA and HTO
+joint.bcs &lt;- intersect(colnames(umis), colnames(htos))
+
+# Subset RNA and HTO counts by joint cell barcodes
+umis &lt;- umis[, joint.bcs]
+htos &lt;- as.matrix(htos[, joint.bcs])
+
+# Confirm that the HTO have the correct names
+rownames(htos)</code></pre>
+<pre><code>[1] &quot;Human_HTO_3&quot;  &quot;Human_HTO_6&quot;  &quot;Human_HTO_7&quot;  &quot;Human_HTO_8&quot;  &quot;Human_HTO_10&quot;
+[6] &quot;Human_HTO_12&quot; &quot;Human_HTO_15&quot; &quot;Human_HTO_16&quot;</code></pre>
+<pre class="r"><code># Perform demultiplexing separately on each capture
+obj.list &lt;- list()
+
+lappend &lt;- function (lst, ...){
+  lst &lt;- c(lst, list(...))
+  return(lst)
+}
+
+for (cn in capture_names) {
+  message(cn)
+  umi = as.matrix(umis[, sce$Capture == cn])
+  hto = as.matrix(htos[, sce$Capture == cn])
+  
+  # Setup Seurat object
+  hashtag &lt;- CreateSeuratObject(counts = umi)
+  
+  # Normalize RNA data with log normalization
+  hashtag &lt;- NormalizeData(hashtag)
+  
+  # Find and scale variable features
+  hashtag &lt;- FindVariableFeatures(hashtag, selection.method = &quot;mean.var.plot&quot;)
+  hashtag &lt;- ScaleData(hashtag, features = VariableFeatures(hashtag))
+  
+  # Add HTO data as a new assay independent from RNA
+  hashtag[[&quot;HTO&quot;]] &lt;- CreateAssayObject(counts = hto)
+  
+  # Normalize HTO data, here we use centered log-ratio (CLR) transformation
+  hashtag &lt;- NormalizeData(hashtag, assay = &quot;HTO&quot;, normalization.method = &quot;CLR&quot;)
+  
+  # Demultiplex cells based on HTO enrichment
+  hashtag &lt;- HTODemux(hashtag, assay = &quot;HTO&quot;, positive.quantile = 0.99)
+  
+  # Rename hash.ID column 
+  hashtag$hash.ID &lt;- factor(gsub(&quot;-&quot;,&quot;_&quot;,hashtag$hash.ID), 
+                            levels = c(features$id, &quot;Doublet&quot;, &quot;Negative&quot;))
+  obj.list &lt;- lappend(obj.list, hashtag)
+}
+
+names(obj.list) &lt;- capture_names
+hashtag &lt;- NULL</code></pre>
+</div>
+<div id="add-hto-demultiplexing-results-to-sce" class="section level2">
+<h2>4.3 Add HTO demultiplexing results to SCE</h2>
+<pre class="r"><code># add hash.ID column to SCE object
+hash.ID &lt;- Reduce(c,
+                  lapply(obj.list, function(x) 
+                    setNames(x@meta.data$hash.ID, colnames(x))))
+sce$HTODemux.ID &lt;- hash.ID
+
+# Store HTODemux results to SCE object
+sce$HTODemux_result &lt;- bind_rows(lapply(obj.list, function(x) x@meta.data))
+
+# Add sample ID to SCE object
+sampleID.HTO &lt;- setNames(c(samples,&quot;Doublet&quot;,&quot;Negative&quot;), levels(sce$HTODemux.ID))
+sampleID.HTO &lt;- sampleID.HTO[sce$HTODemux.ID]
+names(sampleID.HTO) &lt;- colnames(sce)
+sce$sampleID.HTO &lt;- factor(sampleID.HTO, levels=c(samples,&quot;Doublet&quot;,&quot;Negative&quot;))</code></pre>
+</div>
+</div>
+<div id="visualize-hto-demultiplexing-results" class="section level1">
+<h1>5 Visualize HTO demultiplexing results</h1>
+<pre class="r"><code># add colour
+sce$colours &lt;- S4Vectors::make_zero_col_DFrame(ncol(sce))
+
+hto_colours &lt;- setNames(
+  c(palette.colors(nlevels(sce$HTODemux.ID)-2, &quot;Tableau 10&quot;),&quot;#ced4da&quot;,&quot;#6c757d&quot;),
+  levels(sce$HTODemux.ID))
+sce$colours$hto_colours &lt;- hto_colours[sce$HTODemux.ID]
+
+sample_colours &lt;- setNames(
+  c(palette.colors(nlevels(sce$sampleID.HTO)-2, &quot;Tableau 10&quot;),&quot;#ced4da&quot;,&quot;#6c757d&quot;),
+  levels(sce$sampleID.HTO))
+sce$colours$sample_colours &lt;- sample_colours[sce$sampleID.HTO]
+
+capture_colours &lt;- setNames(
+  palette.colors(nlevels(sce$Capture), &quot;Accent&quot;),
+  levels(sce$Capture))
+sce$colours$capture_colours &lt;- capture_colours[sce$Capture]</code></pre>
+<div id="number-of-singlets" class="section level2">
+<h2>5.1 Number of singlets</h2>
+<div class="panelset">
+<div id="pp2-c1" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c1</h3>
+<pre class="r"><code>table(obj.list$`PP2-c1`$HTO_classification.global)</code></pre>
+<pre><code>
+ Doublet Negative  Singlet 
+    3401     3866    18323 </code></pre>
+</div>
+<div id="pp2-c2" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c2</h3>
+<pre class="r"><code>table(obj.list$`PP2-c2`$HTO_classification.global)</code></pre>
+<pre><code>
+ Doublet Negative  Singlet 
+    3726     6764    17025 </code></pre>
+</div>
+<div id="pp2-c3" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c3</h3>
+<pre class="r"><code>table(obj.list$`PP2-c3`$HTO_classification.global)</code></pre>
+<pre><code>
+ Doublet Negative  Singlet 
+    4993     2379    18389 </code></pre>
+</div>
+</div>
+</div>
+<div id="hto-expression-in-ridge-plot" class="section level2">
+<h2>5.2 HTO expression in ridge plot</h2>
+<div class="panelset">
+<div id="pp2-c1-1" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c1</h3>
+<pre class="r"><code># Group cells based on the max HTO signal
+Idents(obj.list$`PP2-c1`) &lt;- &quot;hash.ID&quot;
+RidgePlot(obj.list$`PP2-c1`, assay = &quot;HTO&quot;, 
+          features = rownames(obj.list$`PP2-c1`[[&quot;HTO&quot;]]))</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-11-1.png" width="2304" style="display: block; margin: auto;" /></p>
+</div>
+<div id="pp2-c2-1" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c2</h3>
+<pre class="r"><code># Group cells based on the max HTO signal
+Idents(obj.list$`PP2-c2`) &lt;- &quot;hash.ID&quot;
+RidgePlot(obj.list$`PP2-c2`, assay = &quot;HTO&quot;, 
+          features = rownames(obj.list$`PP2-c2`[[&quot;HTO&quot;]]))</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-12-1.png" width="2304" style="display: block; margin: auto;" /></p>
+</div>
+<div id="pp2-c3-1" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c3</h3>
+<pre class="r"><code># Group cells based on the max HTO signal
+Idents(obj.list$`PP2-c3`) &lt;- &quot;hash.ID&quot;
+RidgePlot(obj.list$`PP2-c3`, assay = &quot;HTO&quot;, 
+          features = rownames(obj.list$`PP2-c3`[[&quot;HTO&quot;]]))</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-13-1.png" width="2304" style="display: block; margin: auto;" /></p>
+</div>
+</div>
+</div>
+<div id="hto-expression-in-heatmap" class="section level2">
+<h2>5.3 HTO expression in heatmap</h2>
+<div class="panelset">
+<div id="pp2-c1-2" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c1</h3>
+<pre class="r"><code>HTOHeatmap(obj.list$`PP2-c1`, assay = &quot;HTO&quot;, ncells = 5000) + 
+  ggtitle(&quot;PP2-c1&quot;) + 
+  theme(plot.title = element_text(hjust=0.5, size=10))</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-14-1.png" width="768" style="display: block; margin: auto;" /></p>
+</div>
+<div id="pp2-c2-2" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c2</h3>
+<pre class="r"><code>HTOHeatmap(obj.list$`PP2-c2`, assay = &quot;HTO&quot;, ncells = 5000) + 
+  ggtitle(&quot;PP2-c2&quot;) + 
+  theme(plot.title = element_text(hjust=0.5, size=12))</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-15-1.png" width="768" style="display: block; margin: auto;" /></p>
+</div>
+<div id="pp2-c3-2" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c3</h3>
+<pre class="r"><code>HTOHeatmap(obj.list$`PP2-c3`, assay = &quot;HTO&quot;, ncells = 5000) + 
+  ggtitle(&quot;PP2-c3&quot;) + 
+  theme(plot.title = element_text(hjust=0.5, size=12))</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-16-1.png" width="768" style="display: block; margin: auto;" /></p>
+</div>
+</div>
+</div>
+<div id="tsne-embeddings-for-htos" class="section level2">
+<h2>5.4 tSNE embeddings for HTOs</h2>
+<div class="panelset">
+<div id="pp2-c1-3" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c1</h3>
+<pre class="r"><code># remove negative cells from the object
+hashtag.subset &lt;- subset(obj.list$`PP2-c1`, idents = &quot;Negative&quot;, invert = TRUE)
+
+# calculate a tSNE embedding of the HTO data
+DefaultAssay(hashtag.subset) &lt;- &quot;HTO&quot;
+hashtag.subset &lt;- ScaleData(hashtag.subset, features = rownames(hashtag.subset))
+hashtag.subset &lt;- RunPCA(hashtag.subset, features = rownames(hashtag.subset), approx = FALSE)
+hashtag.subset &lt;- RunTSNE(hashtag.subset, dims = 1:length(rownames(hashtag.subset)), 
+                          perplexity = 100, check_duplicates = FALSE)
+
+# tSNE plot
+DimPlot(hashtag.subset)</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-17-1.png" width="672" style="display: block; margin: auto;" /></p>
+</div>
+<div id="pp2-c2-3" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c2</h3>
+<pre class="r"><code># remove negative cells from the object
+hashtag.subset &lt;- subset(obj.list$`PP2-c2`, idents = &quot;Negative&quot;, invert = TRUE)
+
+# calculate a tSNE embedding of the HTO data
+DefaultAssay(hashtag.subset) &lt;- &quot;HTO&quot;
+hashtag.subset &lt;- ScaleData(hashtag.subset, features = rownames(hashtag.subset))
+hashtag.subset &lt;- RunPCA(hashtag.subset, features = rownames(hashtag.subset), approx = FALSE)
+hashtag.subset &lt;- RunTSNE(hashtag.subset, dims = 1:length(rownames(hashtag.subset)), 
+                          perplexity = 100, check_duplicates = FALSE)
+
+# tSNE plot
+DimPlot(hashtag.subset)</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-18-1.png" width="672" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-18-1">
+Past versions of unnamed-chunk-18-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-18-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-18-1.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-18-1.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div id="pp2-c3-3" class="section level3 panel-name panel">
+<h3 class="panel-name">PP2-c3</h3>
+<pre class="r"><code># remove negative cells from the object
+hashtag.subset &lt;- subset(obj.list$`PP2-c3`, idents = &quot;Negative&quot;, invert = TRUE)
+
+# calculate a tSNE embedding of the HTO data
+DefaultAssay(hashtag.subset) &lt;- &quot;HTO&quot;
+hashtag.subset &lt;- ScaleData(hashtag.subset, features = rownames(hashtag.subset))
+hashtag.subset &lt;- RunPCA(hashtag.subset, features = rownames(hashtag.subset), approx = FALSE)
+hashtag.subset &lt;- RunTSNE(hashtag.subset, dims = 1:length(rownames(hashtag.subset)), 
+                          perplexity = 100, check_duplicates = FALSE)
+
+# tSNE plot
+DimPlot(hashtag.subset)</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-19-1.png" width="672" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-19-1">
+Past versions of unnamed-chunk-19-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-19-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-19-1.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-19-1.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div id="number-of-demultiplexed-droplets" class="section level2">
+<h2>5.5 Number of demultiplexed droplets</h2>
+<pre class="r"><code>df &lt;- as.data.frame(colData(sce))</code></pre>
+<div class="panelset">
+<div id="named-by-hto" class="section level3 panel-name panel">
+<h3 class="panel-name">Named by HTO</h3>
+<pre class="r"><code># Number of droplets per HTO classification
+p1 &lt;- ggplot(df) + 
+  geom_bar(
+    aes(
+      x = factor(hash.ID, levels(sce$HTODemux.ID)),
+      fill=hash.ID), 
+    position = position_stack(reverse = TRUE)) + 
+  geom_text(stat=&#39;count&#39;, aes(x = hash.ID, label=..count..), hjust=1, size=2.5) +
+  coord_flip() +
+  scale_fill_manual(values = hto_colours) +
+  ylab(&quot;Number of droplets&quot;) +
+  xlab(&quot;HTODemux classification&quot;) +
+  theme_cowplot(font_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p1 + NoLegend() + p1 + facet_grid(~sce$Capture) + plot_layout(widths=c(1, length(capture_names)))</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-21-1.png" width="960" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-21-1">
+Past versions of unnamed-chunk-21-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-21-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-21-1.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-21-1.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div id="named-by-sample-id" class="section level3 panel-name panel">
+<h3 class="panel-name">Named by sample ID</h3>
+<pre class="r"><code># Number of droplets per sample
+p2 &lt;- ggplot(df) + 
+  geom_bar(
+    aes(
+      x = factor(sampleID.HTO, levels(sce$sampleID.HTO)),
+      fill=sampleID.HTO), 
+    position = position_stack(reverse = TRUE)) + 
+  geom_text(stat=&#39;count&#39;, aes(x = sampleID.HTO, label=..count..), hjust=1, size=2.5) +
+  coord_flip() +
+  scale_fill_manual(values = sample_colours) +
+  ylab(&quot;Number of droplets&quot;) +
+  xlab(&quot;Sample ID&quot;) +
+  theme_cowplot(font_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p2 + NoLegend() + p2 + facet_grid(~sce$Capture) + plot_layout(widths=c(1, length(capture_names)))</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-22-1.png" width="960" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-22-1">
+Past versions of unnamed-chunk-22-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-22-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-22-1.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-22-1.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div id="proportion-of-singlets-per-capture" class="section level2">
+<h2>5.6 Proportion of singlets per capture</h2>
+<pre class="r"><code>p3 &lt;- ggplot(df) + 
+  geom_bar(
+    aes(
+      x = Capture,
+      fill= HTODemux_result.HTO_classification.global), 
+    position = position_fill(reverse = TRUE)) + 
+  coord_flip() +
+  scale_fill_manual(values = setNames(c(&quot;#6c757d&quot;,&quot;#ced4da&quot;,&quot;#cfe1b9&quot;),
+                                      c(&quot;Negative&quot;,&quot;Doublet&quot;,&quot;Singlet&quot;))) +
+  ylab(&quot;Proportion of droplets&quot;) +
+  xlab(&quot;HTODemux classification&quot;) +
+  theme_cowplot(font_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p3 +
+  guides(fill=guide_legend(title=&quot;HTO_classification.global&quot;))</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-23-1.png" width="576" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-23-1">
+Past versions of unnamed-chunk-23-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-23-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-23-1.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-23-1.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div id="genetic-demultiplexing" class="section level1">
+<h1>6 Genetic demultiplexing</h1>
+<p>SNPs were called from each capture using cellsnp-lite v1.2.3. Based on the SNP information, cells were assigned to genetic donors using vireo v0.5.8.</p>
+<div id="read-vireo-results" class="section level2">
+<h2>6.1 Read vireo results</h2>
+<pre class="r"><code>vireo_df &lt;- do.call(
+  rbind,
+  lapply(capture_names, function(cn) {
+    message(cn)
+    vireo_df &lt;- read.table(
+      here(&quot;data&quot;, &quot;vireo&quot;, cn, &quot;donor_ids.tsv&quot;),
+      header = TRUE)
+    # Rename &#39;doublet&#39; and &#39;unassigned&#39; to match the terms used in HTODemux 
+    vireo_df$donor_id &lt;- gsub(&quot;doublet&quot;, &quot;Doublet&quot;, vireo_df$donor_id)
+    vireo_df$donor_id &lt;- gsub(&quot;unassigned&quot;, &quot;Negative&quot;, vireo_df$donor_id)
+    vireo_df$donor_id &lt;- paste0(cn, &quot;_&quot;, vireo_df$donor_id)
+    captureNumber &lt;- str_sub(cn, start= -1)
+    vireo_df$colname &lt;- paste0(captureNumber, &quot;_&quot;, vireo_df$cell)
+    # reorder columns to matches SCE.
+    j &lt;- match(colnames(sce)[sce$Capture == cn], vireo_df$colname)
+    stopifnot(!anyNA(j))
+    vireo_df &lt;- vireo_df[j, ]
+  }))</code></pre>
+</div>
+<div id="summarise-vireo-results" class="section level2">
+<h2>6.2 Summarise vireo results</h2>
+<pre class="r"><code>knitr::kable(
+  tabyl(vireo_df, donor_id) %&gt;%
+    adorn_pct_formatting(1),
+  caption = &quot;Assignment of droplets to donors using vireo.&quot;)</code></pre>
+<table>
+<caption>Assignment of droplets to donors using vireo.</caption>
+<thead>
+<tr class="header">
+<th align="left">donor_id</th>
+<th align="right">n</th>
+<th align="left">percent</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">PP2-c1_Doublet</td>
+<td align="right">3399</td>
+<td align="left">4.3%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c1_Negative</td>
+<td align="right">2051</td>
+<td align="left">2.6%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c1_donor0</td>
+<td align="right">2288</td>
+<td align="left">2.9%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c1_donor1</td>
+<td align="right">2739</td>
+<td align="left">3.5%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c1_donor2</td>
+<td align="right">2114</td>
+<td align="left">2.7%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c1_donor3</td>
+<td align="right">2568</td>
+<td align="left">3.3%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c1_donor4</td>
+<td align="right">2460</td>
+<td align="left">3.1%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c1_donor5</td>
+<td align="right">3324</td>
+<td align="left">4.2%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c1_donor6</td>
+<td align="right">2297</td>
+<td align="left">2.9%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c1_donor7</td>
+<td align="right">2350</td>
+<td align="left">3.0%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c2_Doublet</td>
+<td align="right">4420</td>
+<td align="left">5.6%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c2_Negative</td>
+<td align="right">3503</td>
+<td align="left">4.4%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c2_donor0</td>
+<td align="right">2259</td>
+<td align="left">2.9%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c2_donor1</td>
+<td align="right">3254</td>
+<td align="left">4.1%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c2_donor2</td>
+<td align="right">2392</td>
+<td align="left">3.0%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c2_donor3</td>
+<td align="right">2629</td>
+<td align="left">3.3%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c2_donor4</td>
+<td align="right">2528</td>
+<td align="left">3.2%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c2_donor5</td>
+<td align="right">2210</td>
+<td align="left">2.8%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c2_donor6</td>
+<td align="right">2135</td>
+<td align="left">2.7%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c2_donor7</td>
+<td align="right">2185</td>
+<td align="left">2.8%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c3_Doublet</td>
+<td align="right">3961</td>
+<td align="left">5.0%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c3_Negative</td>
+<td align="right">1694</td>
+<td align="left">2.1%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c3_donor0</td>
+<td align="right">2566</td>
+<td align="left">3.3%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c3_donor1</td>
+<td align="right">3312</td>
+<td align="left">4.2%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c3_donor2</td>
+<td align="right">2647</td>
+<td align="left">3.4%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c3_donor3</td>
+<td align="right">2330</td>
+<td align="left">3.0%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c3_donor4</td>
+<td align="right">2236</td>
+<td align="left">2.8%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c3_donor5</td>
+<td align="right">2221</td>
+<td align="left">2.8%</td>
+</tr>
+<tr class="odd">
+<td align="left">PP2-c3_donor6</td>
+<td align="right">2305</td>
+<td align="left">2.9%</td>
+</tr>
+<tr class="even">
+<td align="left">PP2-c3_donor7</td>
+<td align="right">2489</td>
+<td align="left">3.2%</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div id="identify-the-best-match-between-donors-from-the-combination-of-captures" class="section level2">
+<h2>6.3 Identify the best match between donors from the combination of captures</h2>
+<pre class="r"><code># capture 1 is used as base
+cn1 &lt;- capture_names[1]
+
+# read vcf
+f1 &lt;- here(&quot;data&quot;,&quot;vireo&quot;,cn1,&quot;GT_donors.vireo.vcf.gz&quot;)
+x1 &lt;- read.vcfR(f1, verbose=FALSE)
+
+# create unique ID for each locus in each capture.
+y1 &lt;- paste(
+  x1@fix[,&quot;CHROM&quot;],
+  x1@fix[,&quot;POS&quot;],
+  x1@fix[,&quot;REF&quot;],
+  x1@fix[,&quot;ALT&quot;],
+  sep = &quot;_&quot;)
+
+# match donors of every remaining captures to capture 1
+f.best_match_df &lt;- data.frame()
+
+for (cn2 in capture_names[2:length(capture_names)]) {
+  
+  # read vcf
+  f2 &lt;- here(&quot;data&quot;,&quot;vireo&quot;,cn2,&quot;GT_donors.vireo.vcf.gz&quot;)
+  x2 &lt;- read.vcfR(f2, verbose=FALSE)
+  
+  # create unique ID for each locus in each capture.
+  y2 &lt;- paste(
+    x2@fix[,&quot;CHROM&quot;],
+    x2@fix[,&quot;POS&quot;],
+    x2@fix[,&quot;REF&quot;],
+    x2@fix[,&quot;ALT&quot;],
+    sep = &quot;_&quot;)
+  
+  # only keep the loci in common between the 2 captures.
+  i1 &lt;- na.omit(match(y2, y1))
+  i2 &lt;- na.omit(match(y1, y2))
+  
+  # construct genotype matrix at common loci from the 2 captures.
+  donor_names &lt;- colnames(x1@gt)[-1]
+  
+  g1 &lt;- apply(
+    x1@gt[i1, donor_names],
+    2,
+    function(x) sapply(strsplit(x, &quot;:&quot;), `[[`, 1))
+  g2 &lt;- apply(
+    x2@gt[i2, donor_names],
+    2,
+    function(x) sapply(strsplit(x, &quot;:&quot;), `[[`, 1))
+  
+  # count number of genotype matches between pairs of donors (one from each 
+  # capture) and convert to a proportion.
+  z &lt;- matrix(
+    NA_real_,
+    nrow = length(donor_names),
+    ncol = length(donor_names),
+    dimnames = list(donor_names, donor_names))
+  
+  for (i in rownames(z)) {
+    for (j in colnames(z)) {
+      z[i, j] &lt;- sum(g1[, i] == g2[, j]) / nrow(g1)
+    }
+  }
+  rownames(z) &lt;- paste(cn1, rownames(z),sep=&quot;_&quot;)
+  colnames(z) &lt;- paste(cn2, colnames(z),sep=&quot;_&quot;)
+  
+  # look for the best match between donors
+  best_match_df &lt;- data.frame(
+    cn1 = rownames(z),
+    cn2 = apply(
+      z, 1,
+      function(x) colnames(z)[which.max(x)]),
+    check.names = FALSE)
+  
+  knitr::kable(
+    dplyr::select(best_match_df, everything()),
+    caption = paste0(&quot;Best match between donors between &quot;, 
+                     cn1, &quot; and &quot;, cn2, &quot;.&quot;),
+    row.names = FALSE)
+  
+  stopifnot(identical(colnames(sce), vireo_df$colname))
+  
+  # visualize the best match in a heatmap
+  pheatmap::pheatmap(
+    z,
+    color = viridisLite::inferno(101),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    main = paste0(&quot;Proportion of matching genotypes between &quot;, 
+                  cn1, &quot; and &quot;, cn2, &quot;.&quot;))
+  
+  # add matching results to the final best match data frame
+  if (nrow(f.best_match_df)==0) {
+    f.best_match_df &lt;- best_match_df
+  } else {
+    f.best_match_df &lt;- f.best_match_df %&gt;% 
+      mutate(c=best_match_df$cn2)
+    colnames(f.best_match_df) &lt;- paste0(&quot;cn&quot;,1:ncol(f.best_match_df))
+  }
+}</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-26-1.png" width="672" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-26-1">
+Past versions of unnamed-chunk-26-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-26-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-26-1.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-26-1.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-26-2.png" width="672" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-26-2">
+Past versions of unnamed-chunk-26-2.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-26-2" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-26-2.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-26-2.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<pre class="r"><code># add genetic donor name
+f.best_match_df$genetic_donor &lt;- paste0(&quot;donor_&quot;, LETTERS[1:length(donor_names)])
+
+knitr::kable(
+  dplyr::select(f.best_match_df, genetic_donor, everything()),
+  caption = &quot;Best match between donors from the two captures.&quot;,
+  row.names = FALSE)</code></pre>
+<table>
+<caption>Best match between donors from the two captures.</caption>
+<thead>
+<tr class="header">
+<th align="left">genetic_donor</th>
+<th align="left">cn1</th>
+<th align="left">cn2</th>
+<th align="left">cn3</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">donor_A</td>
+<td align="left">PP2-c1_donor0</td>
+<td align="left">PP2-c2_donor7</td>
+<td align="left">PP2-c3_donor3</td>
+</tr>
+<tr class="even">
+<td align="left">donor_B</td>
+<td align="left">PP2-c1_donor1</td>
+<td align="left">PP2-c2_donor3</td>
+<td align="left">PP2-c3_donor2</td>
+</tr>
+<tr class="odd">
+<td align="left">donor_C</td>
+<td align="left">PP2-c1_donor2</td>
+<td align="left">PP2-c2_donor5</td>
+<td align="left">PP2-c3_donor4</td>
+</tr>
+<tr class="even">
+<td align="left">donor_D</td>
+<td align="left">PP2-c1_donor3</td>
+<td align="left">PP2-c2_donor4</td>
+<td align="left">PP2-c3_donor0</td>
+</tr>
+<tr class="odd">
+<td align="left">donor_E</td>
+<td align="left">PP2-c1_donor4</td>
+<td align="left">PP2-c2_donor2</td>
+<td align="left">PP2-c3_donor7</td>
+</tr>
+<tr class="even">
+<td align="left">donor_F</td>
+<td align="left">PP2-c1_donor5</td>
+<td align="left">PP2-c2_donor1</td>
+<td align="left">PP2-c3_donor1</td>
+</tr>
+<tr class="odd">
+<td align="left">donor_G</td>
+<td align="left">PP2-c1_donor6</td>
+<td align="left">PP2-c2_donor6</td>
+<td align="left">PP2-c3_donor5</td>
+</tr>
+<tr class="even">
+<td align="left">donor_H</td>
+<td align="left">PP2-c1_donor7</td>
+<td align="left">PP2-c2_donor0</td>
+<td align="left">PP2-c3_donor6</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code># transform to a long data frame 
+best_match_long_df &lt;- tidyr::pivot_longer(
+  data=f.best_match_df,
+  cols=starts_with(&quot;cn&quot;)) %&gt;%
+  dplyr::select(genetic_donor, value)</code></pre>
+</div>
+<div id="add-genetic-demultiplexing-results-to-sce" class="section level2">
+<h2>6.4 Add genetic demultiplexing results to SCE</h2>
+<pre class="r"><code># add genetic donor to SCE object
+sce$vireo &lt;- DataFrame(
+  vireo_df[, setdiff(colnames(vireo_df), c(&quot;cell&quot;, &quot;colname&quot;))])
+
+sce$genetic_donor &lt;- left_join(
+  vireo_df,
+  best_match_long_df, 
+  by = c(&quot;donor_id&quot; = &quot;value&quot;)) %&gt;%
+  mutate(
+    genetic_donor = factor(
+      case_when(
+        is.na(genetic_donor) ~ sub(paste0(batch_name,&quot;-c[0-9]_&quot;), &quot;&quot;, donor_id),
+        TRUE ~ genetic_donor),
+      levels = c(paste0(&quot;donor_&quot;, LETTERS[1:length(donor_names)]), &quot;Doublet&quot;, &quot;Negative&quot;))) %&gt;%
+  pull(genetic_donor)
+
+# generate a table of HTO to genetic droplets
+tb &lt;- as.data.frame.matrix(
+  table(as.data.frame(colData(sce)[, c(&quot;sampleID.HTO&quot;, &quot;genetic_donor&quot;)]))) %&gt;%
+  dplyr::select(1:length(donor_names)) %&gt;% # discard columns of Doublets and Negatives
+  slice_head(n=length(donor_names)) # discard rows of Doublets and Negatives
+
+# match donor to sample ID according to the best match with HTO
+sampleID.genetics &lt;- setNames(c(rownames(tb)[apply(tb, MARGIN = 2, which.max)],
+                                &quot;Doublet&quot;,&quot;Negative&quot;),
+                              c(colnames(tb),
+                                &quot;Doublet&quot;,&quot;Negative&quot;))
+sampleID.genetics &lt;- sampleID.genetics[sce$genetic_donor]
+names(sampleID.genetics) &lt;- colnames(sce)
+sce$sampleID.genetics &lt;- factor(sampleID.genetics, 
+                                levels=c(samples,&quot;Doublet&quot;,&quot;Negative&quot;))</code></pre>
+</div>
+</div>
+<div id="visualize-genetic-demultiplexing-results" class="section level1">
+<h1>7 Visualize genetic demultiplexing results</h1>
+<div id="table-of-number-of-droplets" class="section level2">
+<h2>7.1 Table of number of droplets</h2>
+<pre class="r"><code>janitor::tabyl(
+  as.data.frame(colData(sce)[, c(&quot;HTODemux.ID&quot;, &quot;genetic_donor&quot;)]),
+  HTODemux.ID,
+  genetic_donor) |&gt;
+  adorn_title(placement = &quot;combined&quot;) |&gt;
+  adorn_totals(&quot;both&quot;) |&gt;
+  knitr::kable(
+    caption = &quot;Number of droplets assigned to each `HTO`/`Genetic donor` combination.&quot;)</code></pre>
+<table>
+<caption>Number of droplets assigned to each <code>HTO</code>/<code>Genetic donor</code> combination.</caption>
+<colgroup>
+<col width="23%" />
+<col width="7%" />
+<col width="7%" />
+<col width="7%" />
+<col width="7%" />
+<col width="7%" />
+<col width="7%" />
+<col width="7%" />
+<col width="7%" />
+<col width="7%" />
+<col width="7%" />
+<col width="5%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th align="left">HTODemux.ID/genetic_donor</th>
+<th align="right">donor_A</th>
+<th align="right">donor_B</th>
+<th align="right">donor_C</th>
+<th align="right">donor_D</th>
+<th align="right">donor_E</th>
+<th align="right">donor_F</th>
+<th align="right">donor_G</th>
+<th align="right">donor_H</th>
+<th align="right">Doublet</th>
+<th align="right">Negative</th>
+<th align="right">Total</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">Human_HTO_3</td>
+<td align="right">10</td>
+<td align="right">11</td>
+<td align="right">1</td>
+<td align="right">5</td>
+<td align="right">4</td>
+<td align="right">5</td>
+<td align="right">5902</td>
+<td align="right">0</td>
+<td align="right">295</td>
+<td align="right">290</td>
+<td align="right">6523</td>
+</tr>
+<tr class="even">
+<td align="left">Human_HTO_6</td>
+<td align="right">6</td>
+<td align="right">4</td>
+<td align="right">6</td>
+<td align="right">1</td>
+<td align="right">2</td>
+<td align="right">9</td>
+<td align="right">2</td>
+<td align="right">6250</td>
+<td align="right">310</td>
+<td align="right">213</td>
+<td align="right">6803</td>
+</tr>
+<tr class="odd">
+<td align="left">Human_HTO_7</td>
+<td align="right">11</td>
+<td align="right">12</td>
+<td align="right">5353</td>
+<td align="right">20</td>
+<td align="right">1</td>
+<td align="right">25</td>
+<td align="right">3</td>
+<td align="right">5</td>
+<td align="right">272</td>
+<td align="right">423</td>
+<td align="right">6125</td>
+</tr>
+<tr class="even">
+<td align="left">Human_HTO_8</td>
+<td align="right">33</td>
+<td align="right">14</td>
+<td align="right">15</td>
+<td align="right">20</td>
+<td align="right">8</td>
+<td align="right">7274</td>
+<td align="right">4</td>
+<td align="right">3</td>
+<td align="right">278</td>
+<td align="right">1216</td>
+<td align="right">8865</td>
+</tr>
+<tr class="odd">
+<td align="left">Human_HTO_10</td>
+<td align="right">4409</td>
+<td align="right">5</td>
+<td align="right">4</td>
+<td align="right">4</td>
+<td align="right">0</td>
+<td align="right">7</td>
+<td align="right">3</td>
+<td align="right">1</td>
+<td align="right">143</td>
+<td align="right">270</td>
+<td align="right">4846</td>
+</tr>
+<tr class="even">
+<td align="left">Human_HTO_12</td>
+<td align="right">10</td>
+<td align="right">5989</td>
+<td align="right">7</td>
+<td align="right">4</td>
+<td align="right">4</td>
+<td align="right">10</td>
+<td align="right">7</td>
+<td align="right">1</td>
+<td align="right">230</td>
+<td align="right">300</td>
+<td align="right">6562</td>
+</tr>
+<tr class="odd">
+<td align="left">Human_HTO_15</td>
+<td align="right">19</td>
+<td align="right">11</td>
+<td align="right">8</td>
+<td align="right">12</td>
+<td align="right">6487</td>
+<td align="right">31</td>
+<td align="right">7</td>
+<td align="right">3</td>
+<td align="right">360</td>
+<td align="right">553</td>
+<td align="right">7491</td>
+</tr>
+<tr class="even">
+<td align="left">Human_HTO_16</td>
+<td align="right">9</td>
+<td align="right">7</td>
+<td align="right">4</td>
+<td align="right">5959</td>
+<td align="right">1</td>
+<td align="right">7</td>
+<td align="right">2</td>
+<td align="right">1</td>
+<td align="right">272</td>
+<td align="right">260</td>
+<td align="right">6522</td>
+</tr>
+<tr class="odd">
+<td align="left">Doublet</td>
+<td align="right">332</td>
+<td align="right">471</td>
+<td align="right">368</td>
+<td align="right">490</td>
+<td align="right">492</td>
+<td align="right">537</td>
+<td align="right">403</td>
+<td align="right">434</td>
+<td align="right">8259</td>
+<td align="right">334</td>
+<td align="right">12120</td>
+</tr>
+<tr class="even">
+<td align="left">Negative</td>
+<td align="right">1964</td>
+<td align="right">1491</td>
+<td align="right">794</td>
+<td align="right">1147</td>
+<td align="right">342</td>
+<td align="right">1985</td>
+<td align="right">320</td>
+<td align="right">216</td>
+<td align="right">1361</td>
+<td align="right">3389</td>
+<td align="right">13009</td>
+</tr>
+<tr class="odd">
+<td align="left">Total</td>
+<td align="right">6803</td>
+<td align="right">8015</td>
+<td align="right">6560</td>
+<td align="right">7662</td>
+<td align="right">7341</td>
+<td align="right">9890</td>
+<td align="right">6653</td>
+<td align="right">6914</td>
+<td align="right">11780</td>
+<td align="right">7248</td>
+<td align="right">78866</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div id="number-of-droplets-named-by-hto-and-genetic-donor" class="section level2">
+<h2>7.2 Number of droplets (named by HTO and genetic donor)</h2>
+<pre class="r"><code># add colour
+genetic_donor_colours &lt;- setNames(
+  c(palette.colors(nlevels(sce$genetic_donor)-2, &quot;Set3&quot;), &quot;#d4a276&quot;,&quot;#9c6644&quot;),
+  levels(sce$genetic_donor))
+sce$colours$genetic_donor_colours &lt;- genetic_donor_colours[sce$genetic_donor]
+
+# number of droplets assigned by HTO method
+p1 &lt;- ggcells(sce) + 
+  geom_bar(aes(x = HTODemux.ID, fill = HTODemux.ID)) + 
+  geom_text(stat=&#39;count&#39;, aes(x = HTODemux.ID, label=..count..), 
+            hjust=1, size=2) +
+  coord_flip() + 
+  ylab(&quot;Number of droplets&quot;) + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,12000,2000),limits=c(0,14000)) +
+  scale_fill_manual(values = sce$colours$hto_colours) 
+
+p1.facet &lt;- ggcells(sce) + 
+  geom_bar(aes(x = HTODemux.ID, fill = HTODemux.ID)) + 
+  geom_text(stat=&#39;count&#39;, aes(x = HTODemux.ID, label=..count..), 
+            hjust=1, size=2) +
+  ylab(&quot;Number of droplets&quot;) + 
+  facet_grid(~Capture, scales = &quot;fixed&quot;, space = &quot;fixed&quot;) + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,8000,2000), limits = c(0,10000)) +
+  scale_fill_manual(values = sce$colours$hto_colours) +
+  theme(axis.title.y = element_blank()) +
+  coord_flip()
+
+# number of droplets assigned by genetic method
+p2 &lt;- ggcells(sce) + 
+  geom_bar(aes(x = genetic_donor, fill = genetic_donor)) + 
+  geom_text(stat=&#39;count&#39;, aes(x = genetic_donor, label=..count..,),
+            hjust=1, size=2) +
+  coord_flip() + 
+  ylab(&quot;Number of droplets&quot;) + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,12000,2000),limits=c(0,14000)) +
+  scale_fill_manual(values = sce$colours$genetic_donor_colours)
+
+p2.facet &lt;- ggcells(sce) + 
+  geom_bar(aes(x = genetic_donor, fill = genetic_donor)) + 
+  geom_text(stat=&#39;count&#39;, aes(x = genetic_donor, label=..count..), 
+            hjust=1, size=2) +
+  ylab(&quot;Number of droplets&quot;) + 
+  facet_grid(~Capture, scales = &quot;fixed&quot;, space = &quot;fixed&quot;) + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,8000,2000), limits = c(0,10000)) +
+  scale_fill_manual(values = sce$colours$genetic_donor_colours) +
+  theme(axis.title.y = element_blank()) +
+  coord_flip()
+
+(p1 + p1.facet+plot_layout(width=c(1,2))) /
+  (p2 + p2.facet+plot_layout(width=c(1,2))) +
+  plot_layout(guides=&quot;collect&quot;)</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-29-1.png" width="960" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-29-1">
+Past versions of unnamed-chunk-29-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-29-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-29-1.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-29-1.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div id="proportion-of-droplets-named-by-hto-and-genetic-donor" class="section level2">
+<h2>7.3 Proportion of droplets (named by HTO and genetic donor)</h2>
+<pre class="r"><code># proportion of genetically assigned droplets in each HTO
+p3 &lt;- ggcells(sce) + 
+  geom_bar(
+    aes(x = HTODemux.ID, fill = genetic_donor),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab(&quot;Frequency&quot;) +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$genetic_donor_colours)
+
+# proportion of HTO assigned droplets in each genetic donor
+p4 &lt;- ggcells(sce) + 
+  geom_bar(
+    aes(x = genetic_donor, fill = HTODemux.ID),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab(&quot;Frequency&quot;) +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$hto_colours)
+
+(p3 + p3 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) /
+  (p4 + p4 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) +
+  plot_layout(guides = &quot;collect&quot;)</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-30-1.png" width="960" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-30-1">
+Past versions of unnamed-chunk-30-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-30-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-30-1.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-30-1.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div id="number-of-droplets-named-by-sample-id" class="section level2">
+<h2>7.4 Number of droplets (named by sample ID)</h2>
+<pre class="r"><code># add colour
+sampleID.HTO_colours &lt;- setNames(
+  c(palette.colors(nlevels(sce$sampleID.HTO)-2, &quot;Tableau 10&quot;), &quot;#ced4da&quot;,&quot;#6c757d&quot;),
+  levels(sce$sampleID.HTO))
+sce$colours$sampleID.HTO_colours &lt;- sampleID.HTO_colours[sce$sampleID.HTO]
+
+sampleID.genetics_colours &lt;- setNames(
+  c(palette.colors(nlevels(sce$sampleID.genetics)-2, &quot;Set3&quot;), &quot;#d4a276&quot;,&quot;#9c6644&quot;),
+  levels(sce$sampleID.genetics))
+sce$colours$sampleID.genetics_colours &lt;- sampleID.genetics_colours[sce$sampleID.genetics]
+
+# number of droplets assigned by HTO method
+p5 &lt;- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.HTO, fill = sampleID.HTO)) + 
+  geom_text(stat=&#39;count&#39;, aes(x = sampleID.HTO, label=..count..), hjust=1, size=2) +
+  coord_flip() + 
+  ggtitle(&quot;By HTO&quot;) +
+  ylab(&quot;Number of droplets&quot;) + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,12000,2000),limits=c(0,14000)) +
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title=&quot;sampleID&quot;))
+
+p5.facet &lt;- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.HTO, fill = sampleID.HTO)) + 
+  geom_text(stat=&#39;count&#39;, aes(x = sampleID.HTO, label=..count..), 
+            hjust=1, size=2) +
+  ylab(&quot;Number of droplets&quot;) + 
+  facet_grid(~Capture, scales = &quot;fixed&quot;, space = &quot;fixed&quot;) + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,8000,2000), limits = c(0,10000)) +
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title=&quot;sampleID&quot;)) +
+    coord_flip()
+
+# number of droplets assigned by genetic method
+p6 &lt;- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.genetics, fill = sampleID.genetics)) + 
+  geom_text(stat=&#39;count&#39;, aes(x = sampleID.genetics, label=..count..), hjust=1, size=2) +
+  coord_flip() + 
+  ggtitle(&quot;By genetics&quot;) +
+  ylab(&quot;Number of droplets&quot;) + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,12000,2000), limits = c(0,14000)) +
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=FALSE)
+
+p6.facet &lt;- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.genetics, fill = sampleID.genetics)) + 
+  geom_text(stat=&#39;count&#39;, aes(x = sampleID.genetics, label=..count..), 
+            hjust=1, size=2) +
+  ylab(&quot;Number of droplets&quot;) + 
+  facet_grid(~Capture, scales = &quot;fixed&quot;, space = &quot;fixed&quot;) + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,8000,2000), limits = c(0,10000)) +
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title=&quot;sampleID&quot;)) +
+  coord_flip()
+
+(p5+p5.facet+plot_layout(width=c(1,2))) /
+  (p6+p6.facet+plot_layout(width=c(1,2))) +
+  plot_layout(guides=&quot;collect&quot;)</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-31-1.png" width="960" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-31-1">
+Past versions of unnamed-chunk-31-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-31-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-31-1.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-31-1.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div id="proportion-of-droplets-named-by-sample-id" class="section level2">
+<h2>7.5 Proportion of droplets (named by sample ID)</h2>
+<pre class="r"><code># proportion of genetically assigned droplets in each HTO
+p7 &lt;- ggcells(sce) + 
+  geom_bar(
+    aes(x = sampleID.HTO, fill = sampleID.genetics),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab(&quot;Frequency&quot;) +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours)
+
+# proportion of HTO assigned droplets in each genetic donor
+p8 &lt;- ggcells(sce) + 
+  geom_bar(
+    aes(x = sampleID.genetics, fill = sampleID.HTO),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab(&quot;Frequency&quot;) +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours)
+
+((p7 + ggtitle(&quot;By HTO&quot;)) +
+    p7 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) /
+  ((p8 + ggtitle(&quot;By genetics&quot;)) + 
+     p8 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) +
+  plot_layout(guides = &quot;collect&quot;)</code></pre>
+<p><img src="figure/01.demux_PP2.Rmd/unnamed-chunk-32-1.png" width="960" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-32-1">
+Past versions of unnamed-chunk-32-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-32-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/ef84032ddc9fd1770c63ee06b941b1da9aae5e40/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-32-1.png" target="_blank">ef84032</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/fbccfdf4023d9d1d7e97fd9dd44d948b866d2450/docs/figure/01.demux_PP2.Rmd/unnamed-chunk-32-1.png" target="_blank">fbccfdf</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div id="save-object" class="section level1">
+<h1>8 Save object</h1>
+<pre class="r"><code>demux_dir &lt;- here(&quot;data&quot;,&quot;SCEs&quot;,&quot;demux&quot;)
+if(!dir.exists(demux_dir)) {
+  dir.create(demux_dir, recursive = TRUE)
+}
+
+out &lt;- paste0(demux_dir,&#39;/&#39;,
+              paste0(batch_name,&quot;.cellbender.demux.SCE.rds&quot;))
+
+if(!file.exists(out)) saveRDS(sce, out)</code></pre>
+<br>
+<p>
+<button type="button" class="btn btn-default btn-workflowr btn-workflowr-sessioninfo" data-toggle="collapse" data-target="#workflowr-sessioninfo" style="display: block;">
+<span class="glyphicon glyphicon-wrench" aria-hidden="true"></span> Session information
+</button>
+</p>
+<div id="workflowr-sessioninfo" class="collapse">
+<pre class="r"><code>sessionInfo()</code></pre>
+<pre><code>R version 4.1.2 (2021-11-01)
+Platform: x86_64-pc-linux-gnu (64-bit)
+Running under: CentOS Linux 7 (Core)
+
+Matrix products: default
+BLAS:   /hpc/software/installed/R/4.1.2/lib64/R/lib/libRblas.so
+LAPACK: /hpc/software/installed/R/4.1.2/lib64/R/lib/libRlapack.so
+
+locale:
+ [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C              
+ [3] LC_TIME=en_US.UTF-8        LC_COLLATE=en_US.UTF-8    
+ [5] LC_MONETARY=en_US.UTF-8    LC_MESSAGES=en_US.UTF-8   
+ [7] LC_PAPER=en_US.UTF-8       LC_NAME=C                 
+ [9] LC_ADDRESS=C               LC_TELEPHONE=C            
+[11] LC_MEASUREMENT=en_US.UTF-8 LC_IDENTIFICATION=C       
+
+attached base packages:
+[1] stats4    stats     graphics  grDevices utils     datasets  methods  
+[8] base     
+
+other attached packages:
+ [1] stringr_1.5.1               janitor_2.1.0              
+ [3] vcfR_1.12.0                 dplyr_1.1.4                
+ [5] scater_1.22.0               scuttle_1.4.0              
+ [7] patchwork_1.2.0             cowplot_1.1.3              
+ [9] SeuratObject_5.0.1          Seurat_4.4.0               
+[11] ggplot2_3.5.2               here_1.0.1                 
+[13] DropletUtils_1.14.2         SingleCellExperiment_1.16.0
+[15] SummarizedExperiment_1.24.0 Biobase_2.54.0             
+[17] GenomicRanges_1.46.1        GenomeInfoDb_1.30.1        
+[19] IRanges_2.28.0              S4Vectors_0.32.4           
+[21] BiocGenerics_0.40.0         MatrixGenerics_1.6.0       
+[23] matrixStats_1.1.0           workflowr_1.7.0            
+
+loaded via a namespace (and not attached):
+  [1] utf8_1.2.4                spatstat.explore_3.2-7   
+  [3] reticulate_1.36.1.9000    R.utils_2.12.2           
+  [5] tidyselect_1.2.1          htmlwidgets_1.6.4        
+  [7] grid_4.1.2                BiocParallel_1.28.3      
+  [9] Rtsne_0.17                munsell_0.5.1            
+ [11] ScaledMatrix_1.2.0        codetools_0.2-20         
+ [13] ica_1.0-3                 statmod_1.5.0            
+ [15] future_1.33.2             miniUI_0.1.1.1           
+ [17] withr_3.0.0               spatstat.random_3.2-3    
+ [19] colorspace_2.1-0          progressr_0.14.0         
+ [21] highr_0.10                knitr_1.46               
+ [23] rstudioapi_0.13           ROCR_1.0-11              
+ [25] tensor_1.5.1              listenv_0.9.1            
+ [27] labeling_0.4.3            git2r_0.31.0             
+ [29] GenomeInfoDbData_1.2.11   polyclip_1.10-6          
+ [31] pheatmap_1.0.12           farver_2.1.1             
+ [33] rhdf5_2.38.1              rprojroot_2.1.1          
+ [35] parallelly_1.37.1         vctrs_0.6.5              
+ [37] generics_0.1.3            xfun_0.43                
+ [39] R6_2.6.1                  ggbeeswarm_0.6.0         
+ [41] rsvd_1.0.5                locfit_1.5-9.4           
+ [43] bitops_1.0-9              rhdf5filters_1.6.0       
+ [45] spatstat.utils_3.1-3      DelayedArray_0.20.0      
+ [47] promises_1.3.0            scales_1.3.0             
+ [49] pinfsc50_1.2.0            beeswarm_0.4.0           
+ [51] gtable_0.3.5              beachmat_2.10.0          
+ [53] globals_0.16.3            processx_3.8.0           
+ [55] goftest_1.2-3             xaringanExtra_0.7.0      
+ [57] spam_2.10-0               rlang_1.1.3              
+ [59] splines_4.1.2             lazyeval_0.2.2           
+ [61] spatstat.geom_3.2-9       yaml_2.3.8               
+ [63] reshape2_1.4.4            abind_1.4-8              
+ [65] httpuv_1.6.15             tools_4.1.2              
+ [67] jquerylib_0.1.4           RColorBrewer_1.1-3       
+ [69] ggridges_0.5.6            Rcpp_1.0.12              
+ [71] plyr_1.8.9                sparseMatrixStats_1.6.0  
+ [73] zlibbioc_1.48.2           purrr_1.2.1              
+ [75] RCurl_1.98-1.9            ps_1.7.2                 
+ [77] deldir_2.0-4              viridis_0.6.2            
+ [79] pbapply_1.7-2             zoo_1.8-12               
+ [81] ggrepel_0.9.1             cluster_2.1.8.1          
+ [83] fs_1.6.4                  magrittr_2.0.3           
+ [85] data.table_1.15.4         scattermore_1.2          
+ [87] lmtest_0.9-40             RANN_2.6.1               
+ [89] whisker_0.4               fitdistrplus_1.1-11      
+ [91] mime_0.12                 evaluate_0.23            
+ [93] xtable_1.8-4              gridExtra_2.3            
+ [95] compiler_4.1.2            tibble_3.2.1             
+ [97] KernSmooth_2.23-20        R.oo_1.24.0              
+ [99] htmltools_0.5.8.1         mgcv_1.8-39              
+[101] later_1.3.2               tidyr_1.3.1              
+[103] lubridate_1.8.0           MASS_7.3-55              
+[105] Matrix_1.6-5              permute_0.9-7            
+[107] cli_3.6.2                 R.methodsS3_1.8.1        
+[109] parallel_4.1.2            dotCall64_1.1-1          
+[111] igraph_2.0.3              pkgconfig_2.0.3          
+[113] getPass_0.2-2             sp_2.1-3                 
+[115] plotly_4.10.4.9000        spatstat.sparse_3.0-3    
+[117] memuse_4.2-1              vipor_0.4.5              
+[119] bslib_0.3.1               dqrng_0.3.2              
+[121] XVector_0.34.0            snakecase_0.11.0         
+[123] callr_3.7.3               digest_0.6.35            
+[125] sctransform_0.4.1         RcppAnnoy_0.0.22         
+[127] vegan_2.5-7               spatstat.data_3.0-4      
+[129] rmarkdown_2.26            leiden_0.4.3.1           
+[131] uwot_0.1.14               edgeR_4.4.2              
+[133] DelayedMatrixStats_1.16.0 shiny_1.8.1.1            
+[135] lifecycle_1.0.4           nlme_3.1-155             
+[137] jsonlite_1.8.8            Rhdf5lib_1.16.0          
+[139] BiocNeighbors_1.12.0      viridisLite_0.4.2        
+[141] limma_3.62.2              fansi_1.0.6              
+[143] pillar_1.9.0              lattice_0.22-7           
+[145] ggrastr_1.0.1             fastmap_1.1.1            
+[147] httr_1.4.7                survival_3.2-13          
+[149] glue_1.7.0                png_0.1-8                
+[151] stringi_1.8.3             sass_0.4.9               
+[153] HDF5Array_1.22.1          BiocSingular_1.10.0      
+[155] ape_5.6-1                 irlba_2.3.5.1            
+[157] future.apply_1.11.2      </code></pre>
+</div>
+</div>
+
+
+<!-- Adjust MathJax settings so that all math formulae are shown using
+TeX fonts only; see
+https://docs.mathjax.org/en/latest/web/configuration.html. This will make
+the presentation more consistent at the cost of the webpage sometimes
+taking slightly longer to load. Note that this only works because the
+footer is added to webpages before the MathJax javascript. -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    "HTML-CSS": { availableFonts: ["TeX"] }
+  });
+</script>
+
+
+
+
+</div>
+</div>
+
+</div>
+
+<script>
+
+// add bootstrap table styles to pandoc tables
+function bootstrapStylePandocTables() {
+  $('tr.odd').parent('tbody').parent('table').addClass('table table-condensed');
+}
+$(document).ready(function () {
+  bootstrapStylePandocTables();
+});
+
+
+</script>
+
+<!-- tabsets -->
+
+<script>
+$(document).ready(function () {
+  window.buildTabsets("TOC");
+});
+
+$(document).ready(function () {
+  $('.tabset-dropdown > .nav-tabs > li').click(function () {
+    $(this).parent().toggleClass('nav-tabs-open');
+  });
+});
+</script>
+
+<!-- code folding -->
+
+<script>
+$(document).ready(function ()  {
+
+    // temporarily add toc-ignore selector to headers for the consistency with Pandoc
+    $('.unlisted.unnumbered').addClass('toc-ignore')
+
+    // move toc-ignore selectors from section div to header
+    $('div.section.toc-ignore')
+        .removeClass('toc-ignore')
+        .children('h1,h2,h3,h4,h5').addClass('toc-ignore');
+
+    // establish options
+    var options = {
+      selectors: "h1,h2,h3",
+      theme: "bootstrap3",
+      context: '.toc-content',
+      hashGenerator: function (text) {
+        return text.replace(/[.\\/?&!#<>]/g, '').replace(/\s/g, '_');
+      },
+      ignoreSelector: ".toc-ignore",
+      scrollTo: 0
+    };
+    options.showAndHide = true;
+    options.smoothScroll = true;
+
+    // tocify
+    var toc = $("#TOC").tocify(options).data("toc-tocify");
+});
+</script>
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>

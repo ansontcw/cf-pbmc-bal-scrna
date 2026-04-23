@@ -1,0 +1,675 @@
+---
+title: 'Quality control for BAL pool: BP2'
+author:
+- name: Anson Wong
+date: "`r Sys.Date()`"
+description: null
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()
+
+```
+
+# 1 Load packages
+
+```{r}
+suppressPackageStartupMessages({
+library(DropletUtils)
+library(here)
+library(ggplot2)
+library(Seurat)
+library(cowplot)
+library(patchwork)
+library(scater)
+library(dplyr)
+library(forcats)
+library(janitor)
+library(stringr)
+library(AnnotationHub)
+library(ensembldb)
+library(msigdbr)
+library(Homo.sapiens)
+library(qs)
+library(xgboost)
+library(pROC)
+library(scDblFinder)
+library(BiocParallel)
+library(tibble)
+library(future.apply)
+library(gridExtra)
+})
+source(here("code","scds.R"))
+set.seed(1990)
+
+```
+
+# 2 Set names for this pool
+
+```{r}
+# Specify batch name
+batch_name <- "BP2"
+num_of_captures <- 3
+
+# Specify capture name
+capture_names <- c(paste0(batch_name, "-c",1:num_of_captures))
+capture_names <- setNames(capture_names, capture_names)
+
+# Assign sample ID to HTO ID
+# Manually list sample names matching HTO id (in alphabetical order)
+samples <- c("M1C209A", #HTO3
+             "M1C191B", #HTO6
+             "M1N066", #HTO7
+             "M1N078", #HTO8
+             "M1C196B", #HTO14
+             "M1C201A", #HTO15
+             "M1C190C" #HTO16
+             )
+
+```
+
+# 3 Filter out vireo/HTO-derived doublets 
+## 3.1 Filter
+```{r}
+# read demultiplexing outputs
+sce <- readRDS(here("data",
+                    "SCEs",
+                    "demux",
+                    paste0(batch_name,".cellbender.demux.SCE.rds")))
+
+# number of droplets before removal
+dim(sce)
+
+# A. remove droplets classified as "doublets" by Vireo
+sce <- sce[, which(sce$sampleID.genetics != "Doublet")]
+
+# number of droplets after doublet removal
+dim(sce)
+
+# look for the following droplets
+## genetically non-negatives with matched sampleID.genetics and sampleID.HTO
+## or classified as Doublet or Negative by HTODemux
+nneg_match <- sce$sampleID.genetics != "Negative" & 
+  (sce$sampleID.HTO == sce$sampleID.genetics | 
+     sce$sampleID.HTO %in% c("Doublet","Negative"))
+
+## genetically negatives but with HTO classification
+neg_match <- sce$sampleID.genetics == "Negative" & 
+  sce$sampleID.HTO %in% samples
+
+# B. keep droplets that match the demultiplexing criteria
+sce <- sce[, nneg_match | neg_match]
+
+# number of droplets after demultiplexing
+dim(sce)
+
+# C. remove droplets with posterior counts of zero called by CellBender
+# see: https://github.com/broadinstitute/CellBender/issues/111
+sce <- sce[, colSums(counts(sce)) != 0]
+
+# number of droplets after removing droplets with zero counts
+dim(sce)
+
+# rename sampleID
+sampleID <- setNames(factor(case_when(
+  sce$sampleID.genetics == "Negative" ~ sce$sampleID.HTO,
+  TRUE ~ sce$sampleID.genetics),levels = samples),
+  colnames(sce))
+
+sce$sampleID <- sampleID
+```
+
+## 3.2 Visualize results after filtering
+```{r}
+# number of droplets assigned by HTO method
+p1 <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.HTO, fill = sampleID.HTO)) + 
+  geom_text(stat='count', aes(x = sampleID.HTO, label=..count..), hjust=1, size=2) +
+  coord_flip() + 
+  ggtitle("By HTO") +
+  ylab("Number of droplets") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,12000,3000),limits=c(0,16000)) +
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title="sampleID"))
+
+p1.facet <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.HTO, fill = sampleID.HTO)) + 
+  geom_text(stat='count', aes(x = sampleID.HTO, label=..count..), 
+            hjust=1, size=2) +
+  #ggtitle("By HTO") +
+  ylab("Number of droplets") + 
+  facet_grid(~Capture, scales = "fixed", space = "fixed") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,6000,2000), limits = c(0,6000)) +
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title="sampleID")) +
+    coord_flip()
+
+# number of droplets assigned by genetic method
+p2 <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.genetics, fill = sampleID.genetics)) + 
+  geom_text(stat='count', aes(x = sampleID.genetics, label=..count..), hjust=1, size=2) +
+  coord_flip() + 
+  ggtitle("By genetics") +
+  ylab("Number of droplets") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,12000,3000), limits = c(0,16000)) +
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=FALSE)
+
+p2.facet <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.genetics, fill = sampleID.genetics)) + 
+  geom_text(stat='count', aes(x = sampleID.genetics, label=..count..), 
+            hjust=1, size=2) +
+  ylab("Number of droplets") + 
+  facet_grid(~Capture, scales = "fixed", space = "fixed") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,6000,2000), limits = c(0,6000)) +
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title="sampleID")) +
+  coord_flip()
+
+(p1+p1.facet+plot_layout(width=c(1,2))) /
+  (p2+p2.facet+plot_layout(width=c(1,2))) +
+  plot_layout(guides="collect")
+
+# proportion of genetically assigned droplets in each HTO
+p3 <- ggcells(sce) + 
+  geom_bar(
+    aes(x = sampleID.HTO, fill = sampleID.genetics),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab("Frequency") +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours)
+
+# proportion of HTO assigned droplets in each genetic donor
+p4 <- ggcells(sce) + 
+  geom_bar(
+    aes(x = sampleID.genetics, fill = sampleID.HTO),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab("Frequency") +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours)
+
+((p3 + ggtitle("By HTO")) +
+    p3 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) /
+  ((p4 + ggtitle("By genetics")) + 
+     p4 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) +
+  plot_layout(guides = "collect")
+```
+
+
+# 4 Add metadata and sex check
+```{r}
+# read metadata.csv
+metadata <- read.csv(here("data",
+                          "sample_sheets",
+                          paste0(batch_name,".metadata.csv")))
+
+i <- match(sce$sampleID, metadata$sampleID)
+
+# add patient demographics
+colData(sce) <- cbind(
+  colData(sce),
+  metadata[i,c("Age","Sex","Condition","Bronchiectasis")]
+)
+
+# sex check by the expression of XIST, a female-specific gene. 
+# this detects certain types of sample-mix-ups.
+plotExpression(
+  sce, 
+  "XIST", 
+  x = "sampleID",
+  colour_by = "Sex", 
+  exprs_values = "counts",
+  swap_rownames = "Symbol") +
+  scale_colour_manual(
+    values = c(
+      "Female" = "deeppink3", 
+      "Male" = "deepskyblue"),
+    name = "Sex") +
+  theme_cowplot() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+
+```
+
+# 5 Add feature-based annotation
+```{r}
+# make feature names unique
+rownames(sce) <- uniquifyFeatureNames(rowData(sce)$ID, rowData(sce)$Symbol)
+
+# prepare ensembl v98 database
+ah <- AnnotationHub(cache="/group/canc2/anson/.cache/R/AnnotationHub", ask=FALSE)
+EnsDb.Hsapiens.v98 <- query(ah, c("EnsDb", "Homo Sapiens", 98))[[1]]
+
+ensdb_columns <- setNames(c("GENEBIOTYPE", "SEQNAME"),
+                          paste0("ENSEMBL.",
+                                 c("GENEBIOTYPE", "SEQNAME")))
+stopifnot(all(ensdb_columns %in% columns(EnsDb.Hsapiens.v98)))
+
+ensdb_df <- DataFrame(
+  lapply(ensdb_columns, function(column) {
+    mapIds(
+      x = EnsDb.Hsapiens.v98,
+      keys = rowData(sce)$ID,
+      keytype = "GENEID",
+      column = column,
+      multiVals = "first")
+  }),
+  row.names = rowData(sce)$ID)
+
+# prepare ncbi database
+ncbi_columns <- setNames(c("ALIAS", "ENTREZID", "GENENAME"),
+                         paste0("NCBI.", c("ALIAS", "ENTREZID", "GENENAME")))
+stopifnot(all(ncbi_columns %in% columns(Homo.sapiens)))
+ncbi_df <- DataFrame(
+  lapply(ncbi_columns, function(column) {
+    mapIds(
+      x = Homo.sapiens,
+      keys = rowData(sce)$ID,
+      keytype = "ENSEMBL",
+      column = column,
+      multiVals = "CharacterList")
+  }),
+  row.names = rowData(sce)$ID)
+
+rowData(sce) <- cbind(rowData(sce), ensdb_df, ncbi_df)
+
+```
+
+# 6 QC: nCount and nFeature
+## 6.1 Calculate metrics
+```{r}
+# prepare gene sets
+## mitochondrial gene set
+mito_set <- rownames(sce)[which(rowData(sce)$ENSEMBL.SEQNAME == "MT")]
+is_mito <- rownames(sce) %in% mito_set
+summary(is_mito)
+
+## ribosomal gene set
+ribo_set <- grep("^RP(S|L)", rownames(sce), value = TRUE)
+c2_sets <- msigdbr(species = "Homo sapiens", category = "C2")
+ribo_set <- union(
+  ribo_set,
+  c2_sets[c2_sets$gs_name == "KEGG_RIBOSOME", ]$human_gene_symbol)
+is_ribo <- rownames(sce) %in% ribo_set
+summary(is_ribo)
+
+# calculate QC metrics
+sce <- addPerCellQCMetrics(
+  sce,
+  subsets = list(Mito = which(is_mito),
+                 Ribo = which(is_ribo)), 
+  use.altexps = NULL)
+
+```
+
+## 6.2 Visualize metrics before removal
+```{r fig.width=10,fig.height=5}
+# library size
+p1 <- plotColData(
+  sce,
+  "sum",
+  x = "sampleID",
+  colour_by = "sampleID",
+  point_size = 0.5) +
+  scale_y_log10() +
+  scale_colour_manual(values = sce$colours$sample_colours, name = "sampleID") +
+  theme(axis.text.x = element_blank())
+
+# number of genes detected
+p2 <- plotColData(
+  sce,
+  "detected",
+  x = "sampleID",
+  colour_by = "sampleID",
+  point_size = 0.5) +
+  scale_colour_manual(values = sce$colours$sample_colours, name = "sampleID") +
+  theme(axis.text.x = element_blank())
+
+((p1 + NoLegend()) + p1 + facet_grid(~sce$Capture) + plot_layout(widths=c(1, length(capture_names))))/
+((p2 + NoLegend()) + p2 + facet_grid(~sce$Capture) + plot_layout(widths=c(1, length(capture_names)))) + 
+  plot_layout(guides="collect")
+
+```
+
+## 6.3 Remove cells with features < 200
+```{r}
+sce$batch <- interaction(
+  sce$Capture, 
+  sce$sampleID, 
+  drop = TRUE,
+  lex.order = FALSE)
+
+feature_drop <- sce$detected < 200
+
+sce_pre_QC_outlier_removal <- sce
+keep <- !feature_drop
+sce_pre_QC_outlier_removal$keep <- keep
+sce <- sce[, keep]
+
+data.frame(
+  ByFeature = tapply(
+    feature_drop, 
+    sce_pre_QC_outlier_removal$batch, 
+    sum,
+    na.rm = TRUE),
+  Remaining = as.vector(unname(table(sce$batch))),
+  PercRemaining = round(
+    100 * as.vector(unname(table(sce$batch))) /
+      as.vector(
+        unname(
+          table(sce_pre_QC_outlier_removal$batch))), 1)) |>
+  tibble::rownames_to_column("batch") |>
+  dplyr::arrange(dplyr::desc(PercRemaining)) |>
+  DT::datatable(
+    caption = "Number of droplets removed by each QC step and the number of droplets remaining.",
+    rownames = FALSE) |>
+  DT::formatRound("PercRemaining", 1)
+
+```
+
+## 6.4 Visualize metrics after removal
+```{r fig.width=10,fig.height=5}
+p3 <- plotColData(
+  sce_pre_QC_outlier_removal,
+  "sum",
+  x = "sampleID",
+  colour_by = "keep",
+  point_size = 0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+p4 <- plotColData(
+  sce_pre_QC_outlier_removal,
+  "detected",
+  x = "sampleID",
+  colour_by = "keep",
+  point_size = 0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+((p3 + NoLegend()) + p3 + facet_grid(~sce_pre_QC_outlier_removal$Capture) + plot_layout(widths=c(1, length(capture_names))))/
+((p4 + NoLegend()) + p4 + facet_grid(~sce_pre_QC_outlier_removal$Capture) + plot_layout(widths=c(1, length(capture_names)))) + 
+  plot_layout(guides="collect")
+
+```
+
+# 7 Doublet detection
+## 7.1 Call doublets
+```{r}
+outLst <- here("data","SCEs","doublet",paste0(batch_name,".rmDbl.sceLst.qs"))
+
+if (!file.exists(outLst)) {
+  out <- here("data","SCEs","doublet",paste0(batch_name,".doublets.SCE.qs"))
+  if(!file.exists(out)){
+    sceLst <- lapply(capture_names, function(cn){
+      sce1 <- sce[, sce$Capture == cn]
+      # scds
+      sce1 <- bcds(sce1, retRes = TRUE, estNdbl = TRUE)
+      sce1 <- cxds(sce1, retRes = TRUE, estNdbl = TRUE)
+      sce1 <- cxds_bcds_hybrid(sce1, estNdbl = TRUE)
+      # scDblFInder 
+      set.seed(1990)
+      bp <- MulticoreParam(16, RNGseed=1990)
+      sce1 <- scDblFinder(sce1, dbr = ncol(sce1)/1000*0.008, BPPARAM=bp)
+      sce1
+    })
+    
+    lapply(sceLst, function(s){
+      colData(s) %>% 
+        data.frame %>%
+        rownames_to_column(var = "cell")
+    }) %>% 
+      bind_rows() %>% 
+      qsave(file = out, nthreads=16)
+    qsave(sceLst, file=outLst, nthreads=16)
+  }
+} else {
+  sceLst <- qread(outLst, nthreads=16)
+}
+
+# add per-capture doublet stat to sce
+columns <- c("bcds_score","bcds_call","cxds_score","cxds_call",
+             "hybrid_score","hybrid_call","scDblFinder.class","scDblFinder.score",
+             "scDblFinder.weighted","scDblFinder.cxds_score")
+
+do.call("rbind",lapply(sceLst, function(sce) {
+  colData(sce)[,columns]
+})) -> doublet_df
+
+colData(sce) <- cbind(
+  colData(sce),
+  doublet_df
+)
+```
+
+## 7.2 Remove doublets
+```{r}
+doublet_drop <- sce$hybrid_call & sce$scDblFinder.class == "doublet"
+
+sce_pre_QC_outlier_removal <- sce
+keep <- !doublet_drop
+sce_pre_QC_outlier_removal$keep <- keep
+
+sce <- sce[, keep]
+
+data.frame(
+  ByDoublet = tapply(
+    doublet_drop, 
+    sce_pre_QC_outlier_removal$batch, 
+    sum,
+    na.rm = TRUE),
+  Remaining = as.vector(unname(table(sce$batch))),
+  PercRemaining = round(
+    100 * as.vector(unname(table(sce$batch))) /
+      as.vector(
+        unname(
+          table(sce_pre_QC_outlier_removal$batch))), 1)) |>
+  tibble::rownames_to_column("batch") |>
+  dplyr::arrange(dplyr::desc(PercRemaining)) |>
+  DT::datatable(
+    caption = "Number of droplets removed by each QC step and the number of droplets remaining.",
+    rownames = FALSE) |>
+  DT::formatRound("PercRemaining", 1)
+
+```
+
+
+
+# 8 QC: mitochondrial percent
+## 8.1 Visualize metrics before removal
+```{r}
+# subsets_Mito_percent
+p1 <- plotColData(
+  sce,
+  "subsets_Mito_percent",
+  x = "sampleID",
+  colour_by = "sampleID",
+  point_size = 0.5) +
+  scale_colour_manual(values = sce$colours$sample_colours, name = "sampleID") +
+  theme(axis.text.x = element_blank())
+
+# subsets_Ribo_percent
+p2 <- plotColData(
+  sce,
+  "subsets_Ribo_percent",
+  x = "sampleID",
+  colour_by = "sampleID",
+  point_size = 0.5) +
+  scale_colour_manual(values = sce$colours$sample_colours, name = "sampleID") +
+  theme(axis.text.x = element_blank())
+
+((p1 + NoLegend()) + p1 + facet_grid(~sce$Capture) + plot_layout(widths=c(1, length(capture_names))))/
+((p2 + NoLegend()) + p2 + facet_grid(~sce$Capture) + plot_layout(widths=c(1, length(capture_names)))) + 
+  plot_layout(guides="collect")
+
+```
+
+## 8.2 Remove cells with >10% mitochondrial reads
+```{r}
+mito_drop <- sce$subsets_Mito_percent > 10
+
+sce_pre_QC_outlier_removal <- sce
+keep <- !mito_drop
+sce_pre_QC_outlier_removal$keep <- keep
+sce <- sce[, keep]
+
+data.frame(
+  ByMito = tapply(
+    mito_drop, 
+    sce_pre_QC_outlier_removal$batch, 
+    sum,
+    na.rm = TRUE),
+  Remaining = as.vector(unname(table(sce$batch))),
+  PercRemaining = round(
+    100 * as.vector(unname(table(sce$batch))) /
+      as.vector(
+        unname(
+          table(sce_pre_QC_outlier_removal$batch))), 1)) |>
+  tibble::rownames_to_column("batch") |>
+  dplyr::arrange(dplyr::desc(PercRemaining)) |>
+  DT::datatable(
+    caption = "Number of droplets removed by each QC step and the number of droplets remaining.",
+    rownames = FALSE) |>
+  DT::formatRound("PercRemaining", 1)
+
+```
+
+## 8.3 Visualize metrics after removal
+```{r fig.width=10,fig.height=5}
+p3 <- plotColData(
+  sce_pre_QC_outlier_removal,
+  "subsets_Mito_percent",
+  x = "sampleID",
+  colour_by = "keep",
+  point_size = 0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p4 <- plotColData(
+  sce_pre_QC_outlier_removal,
+  "subsets_Ribo_percent",
+  x = "sampleID",
+  colour_by = "keep",
+  point_size = 0.5) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+((p3 + NoLegend()) + p3 + facet_grid(~sce_pre_QC_outlier_removal$Capture) + plot_layout(widths=c(1, length(capture_names))))/
+((p4 + NoLegend()) + p4 + facet_grid(~sce_pre_QC_outlier_removal$Capture) + plot_layout(widths=c(1, length(capture_names)))) + 
+  plot_layout(guides="collect")
+
+```
+
+# 9 Droplets retained 
+## 9.1 Number (named by sample ID)
+```{r fig.width=10,fig.height=6}
+# number of droplets assigned by HTO method
+p1 <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.HTO, fill = sampleID.HTO)) + 
+  geom_text(stat='count', aes(x = sampleID.HTO, label=..count..), hjust=1, size=2) +
+  coord_flip() + 
+  ggtitle("By HTO") +
+  ylab("Number of droplets") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,16000,4000),limits=c(0,16000)) +
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title="sampleID"))
+
+p1.facet <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.HTO, fill = sampleID.HTO)) + 
+  geom_text(stat='count', aes(x = sampleID.HTO, label=..count..), 
+            hjust=1, size=2) +
+  #ggtitle("By HTO") +
+  ylab("Number of droplets") + 
+  facet_grid(~Capture, scales = "fixed", space = "fixed") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,4000,1000), limits = c(0,4000)) +
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title="sampleID")) +
+    coord_flip()
+
+# number of droplets assigned by genetic method
+p2 <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.genetics, fill = sampleID.genetics)) + 
+  geom_text(stat='count', aes(x = sampleID.genetics, label=..count..), hjust=1, size=2) +
+  coord_flip() + 
+  ggtitle("By genetics") +
+  ylab("Number of droplets") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,16000,4000), limits = c(0,16000)) +
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=FALSE)
+
+p2.facet <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.genetics, fill = sampleID.genetics)) + 
+  geom_text(stat='count', aes(x = sampleID.genetics, label=..count..), 
+            hjust=1, size=2) +
+  ylab("Number of droplets") + 
+  facet_grid(~Capture, scales = "fixed", space = "fixed") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,4000,1000), limits = c(0,4000)) +
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title="sampleID")) +
+  coord_flip()
+
+(p1+p1.facet+plot_layout(width=c(1,2))) /
+  (p2+p2.facet+plot_layout(width=c(1,2))) +
+  plot_layout(guides="collect")
+
+```
+
+## 9.2 Proportion (named by sample ID)
+```{r fig.width=10,fig.height=6}
+# proportion of genetically assigned droplets in each HTO
+p3 <- ggcells(sce) + 
+  geom_bar(
+    aes(x = sampleID.HTO, fill = sampleID.genetics),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab("Frequency") +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours)
+
+# proportion of HTO assigned droplets in each genetic donor
+p4 <- ggcells(sce) + 
+  geom_bar(
+    aes(x = sampleID.genetics, fill = sampleID.HTO),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab("Frequency") +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours)
+
+((p3 + ggtitle("By HTO")) +
+    p3 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) /
+  ((p4 + ggtitle("By genetics")) + 
+     p4 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) +
+  plot_layout(guides = "collect")
+
+```
+
+# 10 Save object
+```{r}
+prep_dir <- here("data","SCEs","preprocessed")
+if(!dir.exists(prep_dir)) {
+  dir.create(prep_dir, recursive = TRUE)
+}
+
+out <- paste0(prep_dir,'/',
+              paste0(batch_name,".preprocessed.SCE.qs"))
+
+if(!file.exists(out)) qsave(sce, out, nthreads=16)
+
+```

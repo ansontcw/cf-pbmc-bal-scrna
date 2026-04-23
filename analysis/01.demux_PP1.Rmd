@@ -1,0 +1,913 @@
+---
+title: 'Demultiplexing the PBMC pool: PP1'
+author:
+- name: Anson Wong
+date: "`r Sys.Date()`"
+description: null
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()
+
+```
+
+# 1 Load packages
+
+```{r}
+suppressPackageStartupMessages({
+library(DropletUtils)
+library(here)
+library(ggplot2)
+library(Seurat)
+library(cowplot)
+library(patchwork)
+library(scater)
+library(dplyr)
+library(vcfR)
+library(janitor)
+library(stringr)
+})
+set.seed(1990)
+
+```
+
+# 2 Set names for this pool
+
+```{r}
+# Specify batch name
+batch_name <- "PP1"
+num_of_captures <- 3
+
+# Specify capture name
+capture_names <- c(paste0(batch_name, "-c",1:num_of_captures))
+capture_names <- setNames(capture_names, capture_names)
+
+# Assign sample ID to HTO ID
+# Manually list sample names matching HTO id (in alphabetical order)
+samples <- c("M1C198B", #HTO3
+             "M1C208A", #HTO6
+             "M1C166(1)", #HTO7
+             "M1C199B", #HTO8
+             "M1C207B", #HTO10
+             "M1C190C", #HTO12
+             "M1N087", #HTO13
+             "M1N092" #HTO14
+)
+
+```
+
+# 3 Read CellBender outputs
+Ambient RNA and empty droplets were removed by CellBender (see code/cellbender.sh).
+```{r}
+captures <- setNames(
+  here("data",
+       "cellbender",
+       capture_names,
+       paste0(capture_names,".cellbender_filtered.h5")),
+  capture_names)
+
+sce <- read10xCounts(samples = captures, col.names = TRUE)
+stopifnot(!anyDuplicated(colnames(sce)))
+
+sce <- splitAltExps(
+  sce,
+  rowData(sce)$Type,
+  "Gene Expression")
+
+# Tidy up colData
+sce$Capture <- factor(sce$Sample)
+capture_names <- levels(sce$Capture)
+capture_names <- setNames(capture_names, capture_names)
+sce$Sample <- NULL
+
+# Number of droplets after CellBender
+dim(sce)
+
+```
+
+# 4 HTO demultiplexing
+
+HTODemux from the Seurat package was used to demultiplex droplets. 
+Demultiplexing was performed separately on each capture.
+
+## 4.1 Prepare HTO data
+```{r}
+# change DelayedMatrix to dgCMatrix
+assay(sce, "counts") <- as(assay(sce, "counts"), "dgCMatrix")
+
+# Read features.csv used in cellranger multi
+features <- read.csv(here("data",
+                          "sample_sheets",
+                          paste0(batch_name,".features.csv")))
+
+# HTO id are always in alphabetical order
+features
+
+# Rename assay
+is_hto <- grepl("^Human_HTO", rownames(altExp(sce, "Antibody Capture")))
+altExp(sce, "HTO") <- altExp(sce, "Antibody Capture")[is_hto, ]
+altExp(sce, "Antibody Capture") <- NULL
+
+```
+
+## 4.2 HTO Demultiplexing
+```{r}
+# load in umi and hto matrix
+umis <- counts(sce)
+htos <- counts(altExp(sce))
+
+# Select cell barcodes detected by both RNA and HTO
+joint.bcs <- intersect(colnames(umis), colnames(htos))
+
+# Subset RNA and HTO counts by joint cell barcodes
+umis <- umis[, joint.bcs]
+htos <- as.matrix(htos[, joint.bcs])
+
+# Confirm that the HTO have the correct names
+rownames(htos)
+
+# Perform demultiplexing separately on each capture
+obj.list <- list()
+
+lappend <- function (lst, ...){
+  lst <- c(lst, list(...))
+  return(lst)
+}
+
+for (cn in capture_names) {
+  message(cn)
+  umi = as.matrix(umis[, sce$Capture == cn])
+  hto = as.matrix(htos[, sce$Capture == cn])
+  
+  # Setup Seurat object
+  hashtag <- CreateSeuratObject(counts = umi)
+  
+  # Normalize RNA data with log normalization
+  hashtag <- NormalizeData(hashtag)
+  
+  # Find and scale variable features
+  hashtag <- FindVariableFeatures(hashtag, selection.method = "mean.var.plot")
+  hashtag <- ScaleData(hashtag, features = VariableFeatures(hashtag))
+  
+  # Add HTO data as a new assay independent from RNA
+  hashtag[["HTO"]] <- CreateAssayObject(counts = hto)
+  
+  # Normalize HTO data, here we use centered log-ratio (CLR) transformation
+  hashtag <- NormalizeData(hashtag, assay = "HTO", normalization.method = "CLR")
+  
+  # Demultiplex cells based on HTO enrichment
+  hashtag <- HTODemux(hashtag, assay = "HTO", positive.quantile = 0.99)
+  
+  # Rename hash.ID column 
+  hashtag$hash.ID <- factor(gsub("-","_",hashtag$hash.ID), 
+                            levels = c(features$id, "Doublet", "Negative"))
+  obj.list <- lappend(obj.list, hashtag)
+}
+
+names(obj.list) <- capture_names
+hashtag <- NULL
+
+```
+
+## 4.3 Add HTO demultiplexing results to SCE
+```{r}
+# add hash.ID column to SCE object
+hash.ID <- Reduce(c,
+                  lapply(obj.list, function(x) 
+                    setNames(x@meta.data$hash.ID, colnames(x))))
+sce$HTODemux.ID <- hash.ID
+
+# Store HTODemux results to SCE object
+sce$HTODemux_result <- bind_rows(lapply(obj.list, function(x) x@meta.data))
+
+# Add sample ID to SCE object
+sampleID.HTO <- setNames(c(samples,"Doublet","Negative"), levels(sce$HTODemux.ID))
+sampleID.HTO <- sampleID.HTO[sce$HTODemux.ID]
+names(sampleID.HTO) <- colnames(sce)
+sce$sampleID.HTO <- factor(sampleID.HTO, levels=c(samples,"Doublet","Negative"))
+
+```
+
+# 5 Visualize HTO demultiplexing results
+
+```{r}
+# add colour
+sce$colours <- S4Vectors::make_zero_col_DFrame(ncol(sce))
+
+hto_colours <- setNames(
+  c(palette.colors(nlevels(sce$HTODemux.ID)-2, "Tableau 10"),"#ced4da","#6c757d"),
+  levels(sce$HTODemux.ID))
+sce$colours$hto_colours <- hto_colours[sce$HTODemux.ID]
+
+sample_colours <- setNames(
+  c(palette.colors(nlevels(sce$sampleID.HTO)-2, "Tableau 10"),"#ced4da","#6c757d"),
+  levels(sce$sampleID.HTO))
+sce$colours$sample_colours <- sample_colours[sce$sampleID.HTO]
+
+capture_colours <- setNames(
+  palette.colors(nlevels(sce$Capture), "Accent"),
+  levels(sce$Capture))
+sce$colours$capture_colours <- capture_colours[sce$Capture]
+
+```
+
+## 5.1 Number of singlets
+::::: {.panelset}
+
+::: {.panel}
+
+### PP1-c1 {.panel-name}
+
+```{r}
+table(obj.list$`PP1-c1`$HTO_classification.global)
+
+```
+
+:::
+
+::: {.panel}
+
+### PP1-c2 {.panel-name}
+
+```{r}
+table(obj.list$`PP1-c2`$HTO_classification.global)
+
+```
+
+:::
+
+::: {.panel}
+
+### PP1-c3 {.panel-name}
+
+```{r}
+table(obj.list$`PP1-c3`$HTO_classification.global)
+
+```
+
+:::
+
+:::::
+
+## 5.2 HTO expression in ridge plot
+::::: {.panelset}
+
+::: {.panel}
+
+### PP1-c1 {.panel-name}
+
+```{r fig.width=24,fig.height=12}
+# Group cells based on the max HTO signal
+Idents(obj.list$`PP1-c1`) <- "hash.ID"
+RidgePlot(obj.list$`PP1-c1`, assay = "HTO", 
+          features = rownames(obj.list$`PP1-c1`[["HTO"]]))
+
+```
+
+:::
+
+::: {.panel}
+
+### PP1-c2 {.panel-name}
+
+```{r fig.width=24,fig.height=12}
+# Group cells based on the max HTO signal
+Idents(obj.list$`PP1-c2`) <- "hash.ID"
+RidgePlot(obj.list$`PP1-c2`, assay = "HTO", 
+          features = rownames(obj.list$`PP1-c2`[["HTO"]]))
+
+```
+
+:::
+
+::: {.panel}
+
+### PP1-c3 {.panel-name}
+
+```{r fig.width=24,fig.height=12}
+# Group cells based on the max HTO signal
+Idents(obj.list$`PP1-c3`) <- "hash.ID"
+RidgePlot(obj.list$`PP1-c3`, assay = "HTO", 
+          features = rownames(obj.list$`PP1-c3`[["HTO"]]))
+
+```
+
+:::
+
+:::::
+
+## 5.3 HTO expression in heatmap
+::::: {.panelset}
+
+::: {.panel}
+
+### PP1-c1 {.panel-name}
+
+```{r fig.width=8,fig.height=6}
+HTOHeatmap(obj.list$`PP1-c1`, assay = "HTO", ncells = 5000) + 
+  ggtitle("PP1-c1") + 
+  theme(plot.title = element_text(hjust=0.5, size=10))
+
+```
+:::
+
+::: {.panel}
+
+### PP1-c2 {.panel-name}
+
+```{r fig.width=8,fig.height=6}
+HTOHeatmap(obj.list$`PP1-c2`, assay = "HTO", ncells = 5000) + 
+  ggtitle("PP1-c2") + 
+  theme(plot.title = element_text(hjust=0.5, size=12))
+
+```
+:::
+
+::: {.panel}
+
+### PP1-c3 {.panel-name}
+
+```{r fig.width=8,fig.height=6}
+HTOHeatmap(obj.list$`PP1-c3`, assay = "HTO", ncells = 5000) + 
+  ggtitle("PP1-c3") + 
+  theme(plot.title = element_text(hjust=0.5, size=12))
+
+```
+
+:::
+
+:::::
+
+## 5.4 tSNE embeddings for HTOs
+::::: {.panelset}
+
+::: {.panel}
+
+### PP1-c1 {.panel-name}
+
+```{r}
+# remove negative cells from the object
+hashtag.subset <- subset(obj.list$`PP1-c1`, idents = "Negative", invert = TRUE)
+
+# calculate a tSNE embedding of the HTO data
+DefaultAssay(hashtag.subset) <- "HTO"
+hashtag.subset <- ScaleData(hashtag.subset, features = rownames(hashtag.subset))
+hashtag.subset <- RunPCA(hashtag.subset, features = rownames(hashtag.subset), approx = FALSE)
+hashtag.subset <- RunTSNE(hashtag.subset, dims = 1:length(rownames(hashtag.subset)), 
+                          perplexity = 100, check_duplicates = FALSE)
+
+# tSNE plot
+DimPlot(hashtag.subset)
+
+```
+
+:::
+
+::: {.panel}
+
+### PP1-c2 {.panel-name}
+
+```{r}
+# remove negative cells from the object
+hashtag.subset <- subset(obj.list$`PP1-c2`, idents = "Negative", invert = TRUE)
+
+# calculate a tSNE embedding of the HTO data
+DefaultAssay(hashtag.subset) <- "HTO"
+hashtag.subset <- ScaleData(hashtag.subset, features = rownames(hashtag.subset))
+hashtag.subset <- RunPCA(hashtag.subset, features = rownames(hashtag.subset), approx = FALSE)
+hashtag.subset <- RunTSNE(hashtag.subset, dims = 1:length(rownames(hashtag.subset)), 
+                          perplexity = 100, check_duplicates = FALSE)
+
+# tSNE plot
+DimPlot(hashtag.subset)
+
+```
+
+:::
+
+::: {.panel}
+
+### PP1-c3 {.panel-name}
+
+```{r}
+# remove negative cells from the object
+hashtag.subset <- subset(obj.list$`PP1-c3`, idents = "Negative", invert = TRUE)
+
+# calculate a tSNE embedding of the HTO data
+DefaultAssay(hashtag.subset) <- "HTO"
+hashtag.subset <- ScaleData(hashtag.subset, features = rownames(hashtag.subset))
+hashtag.subset <- RunPCA(hashtag.subset, features = rownames(hashtag.subset), approx = FALSE)
+hashtag.subset <- RunTSNE(hashtag.subset, dims = 1:length(rownames(hashtag.subset)), 
+                          perplexity = 100, check_duplicates = FALSE)
+
+# tSNE plot
+DimPlot(hashtag.subset)
+
+```
+
+:::
+
+:::::
+
+## 5.5 Number of demultiplexed droplets
+```{r}
+df <- as.data.frame(colData(sce))
+```
+::::: {.panelset}
+
+::: {.panel}
+
+### Named by HTO {.panel-name}
+
+```{r fig.width=10,fig.height=4}
+# Number of droplets per HTO classification
+p1 <- ggplot(df) + 
+  geom_bar(
+    aes(
+      x = factor(hash.ID, levels(sce$HTODemux.ID)),
+      fill=hash.ID), 
+    position = position_stack(reverse = TRUE)) + 
+  geom_text(stat='count', aes(x = hash.ID, label=..count..), hjust=1, size=2.5) +
+  coord_flip() +
+  scale_fill_manual(values = hto_colours) +
+  ylab("Number of droplets") +
+  xlab("HTODemux classification") +
+  theme_cowplot(font_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p1 + NoLegend() + p1 + facet_grid(~sce$Capture) + plot_layout(widths=c(1, length(capture_names)))
+
+```
+
+:::
+
+::: {.panel}
+
+### Named by sample ID {.panel-name}
+
+```{r fig.width=10,fig.height=4}
+# Number of droplets per sample
+p2 <- ggplot(df) + 
+  geom_bar(
+    aes(
+      x = factor(sampleID.HTO, levels(sce$sampleID.HTO)),
+      fill=sampleID.HTO), 
+    position = position_stack(reverse = TRUE)) + 
+  geom_text(stat='count', aes(x = sampleID.HTO, label=..count..), hjust=1, size=2.5) +
+  coord_flip() +
+  scale_fill_manual(values = sample_colours) +
+  ylab("Number of droplets") +
+  xlab("Sample ID") +
+  theme_cowplot(font_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p2 + NoLegend() + p2 + facet_grid(~sce$Capture) + plot_layout(widths=c(1, length(capture_names)))
+
+```
+
+:::
+
+:::::
+
+## 5.6 Proportion of singlets per capture
+```{r fig.width=6,fig.height=3}
+p3 <- ggplot(df) + 
+  geom_bar(
+    aes(
+      x = Capture,
+      fill= HTODemux_result.HTO_classification.global), 
+    position = position_fill(reverse = TRUE)) + 
+  coord_flip() +
+  scale_fill_manual(values = setNames(c("#6c757d","#ced4da","#cfe1b9"),
+                                      c("Negative","Doublet","Singlet"))) +
+  ylab("Proportion of droplets") +
+  xlab("HTODemux classification") +
+  theme_cowplot(font_size = 8) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p3 +
+  guides(fill=guide_legend(title="HTO_classification.global"))
+
+
+```
+
+
+# 6 Genetic demultiplexing
+
+SNPs were called from each capture using cellsnp-lite v1.2.3. 
+Based on the SNP information, cells were assigned to genetic donors using vireo 
+v0.5.8.
+
+## 6.1 Read vireo results
+```{r}
+vireo_df <- do.call(
+  rbind,
+  lapply(capture_names, function(cn) {
+    message(cn)
+    vireo_df <- read.table(
+      here("data", "vireo", cn, "donor_ids.tsv"),
+      header = TRUE)
+    # Rename 'doublet' and 'unassigned' to match the terms used in HTODemux 
+    vireo_df$donor_id <- gsub("doublet", "Doublet", vireo_df$donor_id)
+    vireo_df$donor_id <- gsub("unassigned", "Negative", vireo_df$donor_id)
+    vireo_df$donor_id <- paste0(cn, "_", vireo_df$donor_id)
+    captureNumber <- str_sub(cn, start= -1)
+    vireo_df$colname <- paste0(captureNumber, "_", vireo_df$cell)
+    # reorder columns to matches SCE.
+    j <- match(colnames(sce)[sce$Capture == cn], vireo_df$colname)
+    stopifnot(!anyNA(j))
+    vireo_df <- vireo_df[j, ]
+  }))
+
+```
+
+## 6.2 Summarise vireo results
+```{r}
+knitr::kable(
+  tabyl(vireo_df, donor_id) %>%
+    adorn_pct_formatting(1),
+  caption = "Assignment of droplets to donors using vireo.")
+```
+
+## 6.3 Identify the best match between donors from the combination of captures
+```{r}
+# capture 1 is used as base
+cn1 <- capture_names[1]
+
+# read vcf
+f1 <- here("data","vireo",cn1,"GT_donors.vireo.vcf.gz")
+x1 <- read.vcfR(f1, verbose=FALSE)
+
+# create unique ID for each locus in each capture.
+y1 <- paste(
+  x1@fix[,"CHROM"],
+  x1@fix[,"POS"],
+  x1@fix[,"REF"],
+  x1@fix[,"ALT"],
+  sep = "_")
+
+# match donors of every remaining captures to capture 1
+f.best_match_df <- data.frame()
+
+for (cn2 in capture_names[2:length(capture_names)]) {
+  
+  # read vcf
+  f2 <- here("data","vireo",cn2,"GT_donors.vireo.vcf.gz")
+  x2 <- read.vcfR(f2, verbose=FALSE)
+  
+  # create unique ID for each locus in each capture.
+  y2 <- paste(
+    x2@fix[,"CHROM"],
+    x2@fix[,"POS"],
+    x2@fix[,"REF"],
+    x2@fix[,"ALT"],
+    sep = "_")
+  
+  # only keep the loci in common between the 2 captures.
+  i1 <- na.omit(match(y2, y1))
+  i2 <- na.omit(match(y1, y2))
+  
+  # construct genotype matrix at common loci from the 2 captures.
+  donor_names <- colnames(x1@gt)[-1]
+  
+  g1 <- apply(
+    x1@gt[i1, donor_names],
+    2,
+    function(x) sapply(strsplit(x, ":"), `[[`, 1))
+  g2 <- apply(
+    x2@gt[i2, donor_names],
+    2,
+    function(x) sapply(strsplit(x, ":"), `[[`, 1))
+  
+  # count number of genotype matches between pairs of donors (one from each 
+  # capture) and convert to a proportion.
+  z <- matrix(
+    NA_real_,
+    nrow = length(donor_names),
+    ncol = length(donor_names),
+    dimnames = list(donor_names, donor_names))
+  
+  for (i in rownames(z)) {
+    for (j in colnames(z)) {
+      z[i, j] <- sum(g1[, i] == g2[, j]) / nrow(g1)
+    }
+  }
+  rownames(z) <- paste(cn1, rownames(z),sep="_")
+  colnames(z) <- paste(cn2, colnames(z),sep="_")
+  
+  # look for the best match between donors
+  best_match_df <- data.frame(
+    cn1 = rownames(z),
+    cn2 = apply(
+      z, 1,
+      function(x) colnames(z)[which.max(x)]),
+    check.names = FALSE)
+  
+  knitr::kable(
+    dplyr::select(best_match_df, everything()),
+    caption = paste0("Best match between donors between ", 
+                     cn1, " and ", cn2, "."),
+    row.names = FALSE)
+  
+  stopifnot(identical(colnames(sce), vireo_df$colname))
+  
+  # visualize the best match in a heatmap
+  pheatmap::pheatmap(
+    z,
+    color = viridisLite::inferno(101),
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    main = paste0("Proportion of matching genotypes between ", 
+                  cn1, " and ", cn2, "."))
+  
+  # add matching results to the final best match data frame
+  if (nrow(f.best_match_df)==0) {
+    f.best_match_df <- best_match_df
+  } else {
+    f.best_match_df <- f.best_match_df %>% 
+      mutate(c=best_match_df$cn2)
+    colnames(f.best_match_df) <- paste0("cn",1:ncol(f.best_match_df))
+  }
+}
+
+# add genetic donor name
+f.best_match_df$genetic_donor <- paste0("donor_", LETTERS[1:length(donor_names)])
+
+knitr::kable(
+  dplyr::select(f.best_match_df, genetic_donor, everything()),
+  caption = "Best match between donors from the two captures.",
+  row.names = FALSE)
+
+# transform to a long data frame 
+best_match_long_df <- tidyr::pivot_longer(
+  data=f.best_match_df,
+  cols=starts_with("cn")) %>%
+  dplyr::select(genetic_donor, value)
+
+```
+
+
+## 6.4 Add genetic demultiplexing results to SCE
+
+```{r}
+# add genetic donor to SCE object
+sce$vireo <- DataFrame(
+  vireo_df[, setdiff(colnames(vireo_df), c("cell", "colname"))])
+
+sce$genetic_donor <- left_join(
+  vireo_df,
+  best_match_long_df, 
+  by = c("donor_id" = "value")) %>%
+  mutate(
+    genetic_donor = factor(
+      case_when(
+        is.na(genetic_donor) ~ sub(paste0(batch_name,"-c[0-9]_"), "", donor_id),
+        TRUE ~ genetic_donor),
+      levels = c(paste0("donor_", LETTERS[1:length(donor_names)]), "Doublet", "Negative"))) %>%
+  pull(genetic_donor)
+
+# generate a table of HTO to genetic droplets
+tb <- as.data.frame.matrix(
+  table(as.data.frame(colData(sce)[, c("sampleID.HTO", "genetic_donor")]))) %>%
+  dplyr::select(1:length(donor_names)) %>% # discard columns of Doublets and Negatives
+  slice_head(n=length(donor_names)) # discard rows of Doublets and Negatives
+
+# match donor to sample ID according to the best match with HTO
+sampleID.genetics <- setNames(c(rownames(tb)[apply(tb, MARGIN = 2, which.max)],
+                                "Doublet","Negative"),
+                              c(colnames(tb),
+                                "Doublet","Negative"))
+sampleID.genetics <- sampleID.genetics[sce$genetic_donor]
+names(sampleID.genetics) <- colnames(sce)
+sce$sampleID.genetics <- factor(sampleID.genetics, 
+                                levels=c(samples,"Doublet","Negative"))
+
+```
+
+
+# 7 Visualize genetic demultiplexing results
+## 7.1 Table of number of droplets
+
+```{r}
+janitor::tabyl(
+  as.data.frame(colData(sce)[, c("HTODemux.ID", "genetic_donor")]),
+  HTODemux.ID,
+  genetic_donor) |>
+  adorn_title(placement = "combined") |>
+  adorn_totals("both") |>
+  knitr::kable(
+    caption = "Number of droplets assigned to each `HTO`/`Genetic donor` combination.")
+
+```
+
+## 7.2 Number of droplets (named by HTO and genetic donor)
+
+```{r fig.width=10,fig.height=6}
+# add colour
+genetic_donor_colours <- setNames(
+  c(palette.colors(nlevels(sce$genetic_donor)-2, "Set3"), "#d4a276","#9c6644"),
+  levels(sce$genetic_donor))
+sce$colours$genetic_donor_colours <- genetic_donor_colours[sce$genetic_donor]
+
+# number of droplets assigned by HTO method
+p1 <- ggcells(sce) + 
+  geom_bar(aes(x = HTODemux.ID, fill = HTODemux.ID)) + 
+  geom_text(stat='count', aes(x = HTODemux.ID, label=..count..), 
+            hjust=1, size=2) +
+  coord_flip() + 
+  ylab("Number of droplets") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,12000,2000),limits=c(0,14000)) +
+  scale_fill_manual(values = sce$colours$hto_colours) 
+
+p1.facet <- ggcells(sce) + 
+  geom_bar(aes(x = HTODemux.ID, fill = HTODemux.ID)) + 
+  geom_text(stat='count', aes(x = HTODemux.ID, label=..count..), 
+            hjust=1, size=2) +
+  ylab("Number of droplets") + 
+  facet_grid(~Capture, scales = "fixed", space = "fixed") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,8000,2000), limits = c(0,10000)) +
+  scale_fill_manual(values = sce$colours$hto_colours) +
+  theme(axis.title.y = element_blank()) +
+  coord_flip()
+
+# number of droplets assigned by genetic method
+p2 <- ggcells(sce) + 
+  geom_bar(aes(x = genetic_donor, fill = genetic_donor)) + 
+  geom_text(stat='count', aes(x = genetic_donor, label=..count..,),
+            hjust=1, size=2) +
+  coord_flip() + 
+  ylab("Number of droplets") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,12000,2000),limits=c(0,14000)) +
+  scale_fill_manual(values = sce$colours$genetic_donor_colours)
+
+p2.facet <- ggcells(sce) + 
+  geom_bar(aes(x = genetic_donor, fill = genetic_donor)) + 
+  geom_text(stat='count', aes(x = genetic_donor, label=..count..), 
+            hjust=1, size=2) +
+  ylab("Number of droplets") + 
+  facet_grid(~Capture, scales = "fixed", space = "fixed") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,8000,2000), limits = c(0,10000)) +
+  scale_fill_manual(values = sce$colours$genetic_donor_colours) +
+  theme(axis.title.y = element_blank()) +
+  coord_flip()
+
+(p1 + p1.facet+plot_layout(width=c(1,2))) /
+  (p2 + p2.facet+plot_layout(width=c(1,2))) +
+  plot_layout(guides="collect")
+
+```
+
+## 7.3 Proportion of droplets (named by HTO and genetic donor)
+
+```{r fig.width=10,fig.height=6}
+# proportion of genetically assigned droplets in each HTO
+p3 <- ggcells(sce) + 
+  geom_bar(
+    aes(x = HTODemux.ID, fill = genetic_donor),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab("Frequency") +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$genetic_donor_colours)
+
+# proportion of HTO assigned droplets in each genetic donor
+p4 <- ggcells(sce) + 
+  geom_bar(
+    aes(x = genetic_donor, fill = HTODemux.ID),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab("Frequency") +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$hto_colours)
+
+(p3 + p3 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) /
+  (p4 + p4 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) +
+  plot_layout(guides = "collect")
+
+```
+
+
+## 7.4 Number of droplets (named by sample ID)
+
+```{r fig.width=10,fig.height=6}
+# add colour
+sampleID.HTO_colours <- setNames(
+  c(palette.colors(nlevels(sce$sampleID.HTO)-2, "Tableau 10"), "#ced4da","#6c757d"),
+  levels(sce$sampleID.HTO))
+sce$colours$sampleID.HTO_colours <- sampleID.HTO_colours[sce$sampleID.HTO]
+
+sampleID.genetics_colours <- setNames(
+  c(palette.colors(nlevels(sce$sampleID.genetics)-2, "Set3"), "#d4a276","#9c6644"),
+  levels(sce$sampleID.genetics))
+sce$colours$sampleID.genetics_colours <- sampleID.genetics_colours[sce$sampleID.genetics]
+
+# number of droplets assigned by HTO method
+p5 <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.HTO, fill = sampleID.HTO)) + 
+  geom_text(stat='count', aes(x = sampleID.HTO, label=..count..), hjust=1, size=2) +
+  coord_flip() + 
+  ggtitle("By HTO") +
+  ylab("Number of droplets") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,12000,2000),limits=c(0,14000)) +
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title="sampleID"))
+
+p5.facet <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.HTO, fill = sampleID.HTO)) + 
+  geom_text(stat='count', aes(x = sampleID.HTO, label=..count..), 
+            hjust=1, size=2) +
+  ylab("Number of droplets") + 
+  facet_grid(~Capture, scales = "fixed", space = "fixed") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,8000,2000), limits = c(0,10000)) +
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title="sampleID")) +
+    coord_flip()
+
+# number of droplets assigned by genetic method
+p6 <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.genetics, fill = sampleID.genetics)) + 
+  geom_text(stat='count', aes(x = sampleID.genetics, label=..count..), hjust=1, size=2) +
+  coord_flip() + 
+  ggtitle("By genetics") +
+  ylab("Number of droplets") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,12000,2000), limits = c(0,14000)) +
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=FALSE)
+
+p6.facet <- ggcells(sce) + 
+  geom_bar(aes(x = sampleID.genetics, fill = sampleID.genetics)) + 
+  geom_text(stat='count', aes(x = sampleID.genetics, label=..count..), 
+            hjust=1, size=2) +
+  ylab("Number of droplets") + 
+  facet_grid(~Capture, scales = "fixed", space = "fixed") + 
+  theme_cowplot(font_size = 8) + 
+  scale_y_continuous(breaks=seq(0,8000,2000), limits = c(0,10000)) +
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours) +
+  theme(axis.title.y = element_blank()) +
+  guides(fill=guide_legend(title="sampleID")) +
+  coord_flip()
+
+(p5+p5.facet+plot_layout(width=c(1,2))) /
+  (p6+p6.facet+plot_layout(width=c(1,2))) +
+  plot_layout(guides="collect")
+```
+
+## 7.5 Proportion of droplets (named by sample ID)
+
+```{r fig.width=10,fig.height=6}
+# proportion of genetically assigned droplets in each HTO
+p7 <- ggcells(sce) + 
+  geom_bar(
+    aes(x = sampleID.HTO, fill = sampleID.genetics),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab("Frequency") +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$sampleID.genetics_colours)
+
+# proportion of HTO assigned droplets in each genetic donor
+p8 <- ggcells(sce) + 
+  geom_bar(
+    aes(x = sampleID.genetics, fill = sampleID.HTO),
+    position = position_fill(reverse = TRUE)) +
+  coord_flip() +
+  ylab("Frequency") +
+  theme_cowplot(font_size = 8) + 
+  scale_fill_manual(values = sce$colours$sampleID.HTO_colours)
+
+((p7 + ggtitle("By HTO")) +
+    p7 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) /
+  ((p8 + ggtitle("By genetics")) + 
+     p8 + facet_grid(~Capture) + plot_layout(widths = c(1, 2))) +
+  plot_layout(guides = "collect")
+
+```
+
+# 8 Save object
+
+```{r}
+demux_dir <- here("data","SCEs","demux")
+if(!dir.exists(demux_dir)) {
+  dir.create(demux_dir, recursive = TRUE)
+}
+
+out <- paste0(demux_dir,'/',
+              paste0(batch_name,".cellbender.demux.SCE.rds"))
+
+if(!file.exists(out)) saveRDS(sce, out)
+
+```

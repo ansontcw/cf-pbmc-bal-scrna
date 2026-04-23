@@ -1,0 +1,1776 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+
+
+<meta name="date" content="2026-04-23" />
+
+<title>Quality control for PBMC single captures</title>
+
+<script src="site_libs/header-attrs-2.26/header-attrs.js"></script>
+<script src="site_libs/jquery-3.6.0/jquery-3.6.0.min.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link href="site_libs/bootstrap-3.3.5/css/cosmo.min.css" rel="stylesheet" />
+<script src="site_libs/bootstrap-3.3.5/js/bootstrap.min.js"></script>
+<script src="site_libs/bootstrap-3.3.5/shim/html5shiv.min.js"></script>
+<script src="site_libs/bootstrap-3.3.5/shim/respond.min.js"></script>
+<style>h1 {font-size: 34px;}
+       h1.title {font-size: 38px;}
+       h2 {font-size: 30px;}
+       h3 {font-size: 24px;}
+       h4 {font-size: 18px;}
+       h5 {font-size: 16px;}
+       h6 {font-size: 12px;}
+       code {color: inherit; background-color: rgba(0, 0, 0, 0.04);}
+       pre:not([class]) { background-color: white }</style>
+<script src="site_libs/jqueryui-1.13.2/jquery-ui.min.js"></script>
+<link href="site_libs/tocify-1.9.1/jquery.tocify.css" rel="stylesheet" />
+<script src="site_libs/tocify-1.9.1/jquery.tocify.js"></script>
+<script src="site_libs/navigation-1.1/tabsets.js"></script>
+<link href="site_libs/highlightjs-9.12.0/textmate.css" rel="stylesheet" />
+<script src="site_libs/highlightjs-9.12.0/highlight.js"></script>
+<link href="site_libs/panelset-0.2.6/panelset.css" rel="stylesheet" />
+<script src="site_libs/panelset-0.2.6/panelset.js"></script>
+
+<link rel="icon" href="https://github.com/workflowr/workflowr-assets/raw/main/img/reproducible.png">
+<!-- Add a small amount of space between sections. -->
+<style type="text/css">
+div.section {
+  padding-top: 12px;
+}
+</style>
+
+
+
+<style type="text/css">
+  code{white-space: pre-wrap;}
+  span.smallcaps{font-variant: small-caps;}
+  span.underline{text-decoration: underline;}
+  div.column{display: inline-block; vertical-align: top; width: 50%;}
+  div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+  ul.task-list{list-style: none;}
+    </style>
+
+<style type="text/css">code{white-space: pre;}</style>
+<script type="text/javascript">
+if (window.hljs) {
+  hljs.configure({languages: []});
+  hljs.initHighlightingOnLoad();
+  if (document.readyState && document.readyState === "complete") {
+    window.setTimeout(function() { hljs.initHighlighting(); }, 0);
+  }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<style type = "text/css">
+.main-container {
+  max-width: 940px;
+  margin-left: auto;
+  margin-right: auto;
+}
+img {
+  max-width:100%;
+}
+.tabbed-pane {
+  padding-top: 12px;
+}
+.html-widget {
+  margin-bottom: 20px;
+}
+button.code-folding-btn:focus {
+  outline: none;
+}
+summary {
+  display: list-item;
+}
+details > summary > p:only-child {
+  display: inline;
+}
+pre code {
+  padding: 0;
+}
+</style>
+
+
+<style type="text/css">
+.dropdown-submenu {
+  position: relative;
+}
+.dropdown-submenu>.dropdown-menu {
+  top: 0;
+  left: 100%;
+  margin-top: -6px;
+  margin-left: -1px;
+  border-radius: 0 6px 6px 6px;
+}
+.dropdown-submenu:hover>.dropdown-menu {
+  display: block;
+}
+.dropdown-submenu>a:after {
+  display: block;
+  content: " ";
+  float: right;
+  width: 0;
+  height: 0;
+  border-color: transparent;
+  border-style: solid;
+  border-width: 5px 0 5px 5px;
+  border-left-color: #cccccc;
+  margin-top: 5px;
+  margin-right: -10px;
+}
+.dropdown-submenu:hover>a:after {
+  border-left-color: #adb5bd;
+}
+.dropdown-submenu.pull-left {
+  float: none;
+}
+.dropdown-submenu.pull-left>.dropdown-menu {
+  left: -100%;
+  margin-left: 10px;
+  border-radius: 6px 0 6px 6px;
+}
+</style>
+
+<script type="text/javascript">
+// manage active state of menu based on current page
+$(document).ready(function () {
+  // active menu anchor
+  href = window.location.pathname
+  href = href.substr(href.lastIndexOf('/') + 1)
+  if (href === "")
+    href = "index.html";
+  var menuAnchor = $('a[href="' + href + '"]');
+
+  // mark the anchor link active (and if it's in a dropdown, also mark that active)
+  var dropdown = menuAnchor.closest('li.dropdown');
+  if (window.bootstrap) { // Bootstrap 4+
+    menuAnchor.addClass('active');
+    dropdown.find('> .dropdown-toggle').addClass('active');
+  } else { // Bootstrap 3
+    menuAnchor.parent().addClass('active');
+    dropdown.addClass('active');
+  }
+
+  // Navbar adjustments
+  var navHeight = $(".navbar").first().height() + 15;
+  var style = document.createElement('style');
+  var pt = "padding-top: " + navHeight + "px; ";
+  var mt = "margin-top: -" + navHeight + "px; ";
+  var css = "";
+  // offset scroll position for anchor links (for fixed navbar)
+  for (var i = 1; i <= 6; i++) {
+    css += ".section h" + i + "{ " + pt + mt + "}\n";
+  }
+  style.innerHTML = "body {" + pt + "padding-bottom: 40px; }\n" + css;
+  document.head.appendChild(style);
+});
+</script>
+
+<!-- tabsets -->
+
+<style type="text/css">
+.tabset-dropdown > .nav-tabs {
+  display: inline-table;
+  max-height: 500px;
+  min-height: 44px;
+  overflow-y: auto;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.tabset-dropdown > .nav-tabs > li.active:before, .tabset-dropdown > .nav-tabs.nav-tabs-open:before {
+  content: "\e259";
+  font-family: 'Glyphicons Halflings';
+  display: inline-block;
+  padding: 10px;
+  border-right: 1px solid #ddd;
+}
+
+.tabset-dropdown > .nav-tabs.nav-tabs-open > li.active:before {
+  content: "\e258";
+  font-family: 'Glyphicons Halflings';
+  border: none;
+}
+
+.tabset-dropdown > .nav-tabs > li.active {
+  display: block;
+}
+
+.tabset-dropdown > .nav-tabs > li > a,
+.tabset-dropdown > .nav-tabs > li > a:focus,
+.tabset-dropdown > .nav-tabs > li > a:hover {
+  border: none;
+  display: inline-block;
+  border-radius: 4px;
+  background-color: transparent;
+}
+
+.tabset-dropdown > .nav-tabs.nav-tabs-open > li {
+  display: block;
+  float: none;
+}
+
+.tabset-dropdown > .nav-tabs > li {
+  display: none;
+}
+</style>
+
+<!-- code folding -->
+
+
+
+<style type="text/css">
+
+#TOC {
+  margin: 25px 0px 20px 0px;
+}
+@media (max-width: 768px) {
+#TOC {
+  position: relative;
+  width: 100%;
+}
+}
+
+@media print {
+.toc-content {
+  /* see https://github.com/w3c/csswg-drafts/issues/4434 */
+  float: right;
+}
+}
+
+.toc-content {
+  padding-left: 30px;
+  padding-right: 40px;
+}
+
+div.main-container {
+  max-width: 1200px;
+}
+
+div.tocify {
+  width: 20%;
+  max-width: 260px;
+  max-height: 85%;
+}
+
+@media (min-width: 768px) and (max-width: 991px) {
+  div.tocify {
+    width: 25%;
+  }
+}
+
+@media (max-width: 767px) {
+  div.tocify {
+    width: 100%;
+    max-width: none;
+  }
+}
+
+.tocify ul, .tocify li {
+  line-height: 20px;
+}
+
+.tocify-subheader .tocify-item {
+  font-size: 0.90em;
+}
+
+.tocify .list-group-item {
+  border-radius: 0px;
+}
+
+
+</style>
+
+
+
+</head>
+
+<body>
+
+
+<div class="container-fluid main-container">
+
+
+<!-- setup 3col/9col grid for toc_float and main content  -->
+<div class="row">
+<div class="col-xs-12 col-sm-4 col-md-3">
+<div id="TOC" class="tocify">
+</div>
+</div>
+
+<div class="toc-content col-xs-12 col-sm-8 col-md-9">
+
+
+
+
+<div class="navbar navbar-default  navbar-fixed-top" role="navigation">
+  <div class="container">
+    <div class="navbar-header">
+      <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-bs-toggle="collapse" data-target="#navbar" data-bs-target="#navbar">
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+      </button>
+      <a class="navbar-brand" href="index.html">cf-pbmc-bal-scrna</a>
+    </div>
+    <div id="navbar" class="navbar-collapse collapse">
+      <ul class="nav navbar-nav">
+        <li>
+  <a href="index.html">Home</a>
+</li>
+<li>
+  <a href="about.html">About</a>
+</li>
+<li>
+  <a href="license.html">License</a>
+</li>
+      </ul>
+      <ul class="nav navbar-nav navbar-right">
+        
+      </ul>
+    </div><!--/.nav-collapse -->
+  </div><!--/.container -->
+</div><!--/.navbar -->
+
+<div id="header">
+
+
+
+<h1 class="title toc-ignore">Quality control for PBMC single captures</h1>
+<h4 class="author">Anson Wong</h4>
+<h4 class="date">2026-04-23</h4>
+
+</div>
+
+
+<p>
+<button type="button" class="btn btn-default btn-workflowr btn-workflowr-report" data-toggle="collapse" data-target="#workflowr-report">
+<span class="glyphicon glyphicon-list" aria-hidden="true"></span> workflowr <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span>
+</button>
+</p>
+<div id="workflowr-report" class="collapse">
+<ul class="nav nav-tabs">
+<li class="active">
+<a data-toggle="tab" href="#summary">Summary</a>
+</li>
+<li>
+<a data-toggle="tab" href="#checks"> Checks <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> </a>
+</li>
+<li>
+<a data-toggle="tab" href="#versions">Past versions</a>
+</li>
+</ul>
+<div class="tab-content">
+<div id="summary" class="tab-pane fade in active">
+<p>
+<strong>Last updated:</strong> 2026-04-23
+</p>
+<p>
+<strong>Checks:</strong> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> 7 <span class="glyphicon glyphicon-exclamation-sign text-danger" aria-hidden="true"></span> 0
+</p>
+<p>
+<strong>Knit directory:</strong> <code>cf-pbmc-bal-scrna/</code> <span class="glyphicon glyphicon-question-sign" aria-hidden="true" title="This is the local directory in which the code in this file was executed."> </span>
+</p>
+<p>
+This reproducible <a href="https://rmarkdown.rstudio.com">R Markdown</a> analysis was created with <a
+  href="https://github.com/workflowr/workflowr">workflowr</a> (version 1.7.0). The <em>Checks</em> tab describes the reproducibility checks that were applied when the results were created. The <em>Past versions</em> tab lists the development history.
+</p>
+<hr>
+</div>
+<div id="checks" class="tab-pane fade">
+<div id="workflowr-checks" class="panel-group">
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongRMarkdownfilestronguptodate"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>R Markdown file:</strong> up-to-date </a>
+</p>
+</div>
+<div id="strongRMarkdownfilestronguptodate" class="panel-collapse collapse">
+<div class="panel-body">
+<p>Great! Since the R Markdown file has been committed to the Git repository, you know the exact version of the code that produced these results.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongEnvironmentstrongempty"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>Environment:</strong> empty </a>
+</p>
+</div>
+<div id="strongEnvironmentstrongempty" class="panel-collapse collapse">
+<div class="panel-body">
+<p>Great job! The global environment was empty. Objects defined in the global environment can affect the analysis in your R Markdown file in unknown ways. For reproduciblity it’s best to always run the code in an empty environment.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongSeedstrongcodesetseed20260423code"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>Seed:</strong> <code>set.seed(20260423)</code> </a>
+</p>
+</div>
+<div id="strongSeedstrongcodesetseed20260423code" class="panel-collapse collapse">
+<div class="panel-body">
+<p>The command <code>set.seed(20260423)</code> was run prior to running the code in the R Markdown file. Setting a seed ensures that any results that rely on randomness, e.g. subsampling or permutations, are reproducible.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongSessioninformationstrongrecorded"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>Session information:</strong> recorded </a>
+</p>
+</div>
+<div id="strongSessioninformationstrongrecorded" class="panel-collapse collapse">
+<div class="panel-body">
+<p>Great job! Recording the operating system, R version, and package versions is critical for reproducibility.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongCachestrongnone"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>Cache:</strong> none </a>
+</p>
+</div>
+<div id="strongCachestrongnone" class="panel-collapse collapse">
+<div class="panel-body">
+<p>Nice! There were no cached chunks for this analysis, so you can be confident that you successfully produced the results during this run.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongFilepathsstrongrelative"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>File paths:</strong> relative </a>
+</p>
+</div>
+<div id="strongFilepathsstrongrelative" class="panel-collapse collapse">
+<div class="panel-body">
+<p>Great job! Using relative paths to the files within your workflowr project makes it easier to run your code on other machines.</p>
+</div>
+</div>
+</div>
+<div class="panel panel-default">
+<div class="panel-heading">
+<p class="panel-title">
+<a data-toggle="collapse" data-parent="#workflowr-checks" href="#strongRepositoryversionstrongahrefhttpsgithubcomansontcwcfpbmcbalscrnatree16fd55244ce9ff112b9cec581e7c2c8652504c99targetblank16fd552a"> <span class="glyphicon glyphicon-ok text-success" aria-hidden="true"></span> <strong>Repository version:</strong> <a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/tree/16fd55244ce9ff112b9cec581e7c2c8652504c99" target="_blank">16fd552</a> </a>
+</p>
+</div>
+<div id="strongRepositoryversionstrongahrefhttpsgithubcomansontcwcfpbmcbalscrnatree16fd55244ce9ff112b9cec581e7c2c8652504c99targetblank16fd552a" class="panel-collapse collapse">
+<div class="panel-body">
+<p>
+Great! You are using Git for version control. Tracking code development and connecting the code version to the results is critical for reproducibility.
+</p>
+<p>
+The results in this page were generated with repository version <a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/tree/16fd55244ce9ff112b9cec581e7c2c8652504c99" target="_blank">16fd552</a>. See the <em>Past versions</em> tab to see a history of the changes made to the R Markdown and HTML files.
+</p>
+<p>
+Note that you need to be careful to ensure that all relevant files for the analysis have been committed to Git prior to generating the results (you can use <code>wflow_publish</code> or <code>wflow_git_commit</code>). workflowr only checks the R Markdown file, but you know if there are other scripts or data files that it depends on. Below is the status of the Git repository when the results were generated:
+</p>
+<pre><code>
+Ignored files:
+    Ignored:    .DS_Store
+
+Untracked files:
+    Untracked:  ._.DS_Store
+    Untracked:  data/SCEs
+    Untracked:  data/cellbender
+    Untracked:  data/cytokine
+    Untracked:  data/plots
+    Untracked:  data/sample_sheets
+    Untracked:  data/vireo
+    Untracked:  notebooks/
+
+</code></pre>
+<p>
+Note that any generated files, e.g. HTML, png, CSS, etc., are not included in this status report because it is ok for generated content to have uncommitted changes.
+</p>
+</div>
+</div>
+</div>
+</div>
+<hr>
+</div>
+<div id="versions" class="tab-pane fade">
+
+<p>
+These are the previous versions of the repository in which changes were made to the R Markdown (<code>analysis/02.qc_Pcap.Rmd</code>) and HTML (<code>docs/02.qc_Pcap.html</code>) files. If you’ve configured a remote Git repository (see <code>?wflow_git_remote</code>), click on the hyperlinks in the table below to view the files as they were in that past version.
+</p>
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+File
+</th>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+<th>
+Message
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+html
+</td>
+<td>
+<a href="https://rawcdn.githack.com/ansontcw/cf-pbmc-bal-scrna/e6e327b879dd8af4a2e27876e0955fc1f186bda1/docs/02.qc_Pcap.html" target="_blank">e6e327b</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+<td>
+Build site.
+</td>
+</tr>
+<tr>
+<td>
+Rmd
+</td>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/d3ab1c73a34e165101262d2c15bdf746d7615a5a/analysis/02.qc_Pcap.Rmd" target="_blank">d3ab1c7</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+<td>
+Publish PBMC QC analyses
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<hr>
+</div>
+</div>
+</div>
+<pre class="r"><code>knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()</code></pre>
+<div id="load-packages" class="section level1">
+<h1>1 Load packages</h1>
+<pre class="r"><code>suppressPackageStartupMessages({
+library(DropletUtils)
+library(here)
+library(ggplot2)
+library(Seurat)
+library(cowplot)
+library(patchwork)
+library(scater)
+library(dplyr)
+library(forcats)
+library(janitor)
+library(stringr)
+library(AnnotationHub)
+library(ensembldb)
+library(msigdbr)
+library(Homo.sapiens)
+library(qs)
+library(xgboost)
+library(pROC)
+library(scDblFinder)
+library(BiocParallel)
+library(tibble)
+library(future.apply)
+library(gridExtra)
+})
+source(here(&quot;code&quot;,&quot;scds.R&quot;))
+set.seed(1990)</code></pre>
+</div>
+<div id="set-names-for-captures" class="section level1">
+<h1>2 Set names for captures</h1>
+<pre class="r"><code># sampleID
+samples &lt;- c(&quot;M1C191B&quot;,
+             &quot;cf-p15&quot;,&quot;cf-p14&quot;,&quot;cf-p6&quot;,&quot;cf-p5&quot;,
+             &quot;mabsc-p11&quot;,&quot;mabsc-p9&quot;,&quot;mabsc-p4&quot;,&quot;mabsc-p3&quot;,
+             &quot;mabscpd-p13&quot;,&quot;mabscpd-p12&quot;,&quot;mabscpd-p1&quot;
+)
+
+# batch_name
+batch_name &lt;- &quot;Pcap&quot;
+
+# Specify capture name
+capture_names &lt;- setNames(samples, samples)</code></pre>
+</div>
+<div id="read-cellbender-outputs" class="section level1">
+<h1>3 Read CellBender outputs</h1>
+<p>Ambient RNA and empty droplets were removed by CellBender (see code/cellbender.sh).</p>
+<pre class="r"><code>captures &lt;- setNames(
+  here(&quot;data&quot;,
+       &quot;cellbender&quot;,
+       capture_names,
+       paste0(capture_names,&quot;.cellbender_filtered.h5&quot;)),
+  capture_names)
+
+# read objects
+outLst &lt;- here(&quot;data&quot;,&quot;SCEs&quot;,&quot;doublet&quot;,paste0(batch_name,&quot;.qc.sceLst.qs&quot;))
+if (!file.exists(outLst)) {
+  sceLst &lt;- lapply(capture_names, function(cap) {
+    sce &lt;- read10xCounts(samples = captures[cap], col.names = TRUE)
+    stopifnot(!anyDuplicated(colnames(sce)))
+    
+    sce &lt;- splitAltExps(
+      sce,
+      rowData(sce)$Type,
+      &quot;Gene Expression&quot;)
+    
+    # Tidy up colData
+    sce$Capture &lt;- factor(sce$Sample)
+    sce$Sample &lt;- NULL
+    
+    # Number of droplets after CellBender
+    dim(sce)
+    
+    # add sampleID
+    sce$sampleID &lt;- factor(cap)
+    
+    # change DelayedMatrix to dgCMatrix
+    assay(sce, &quot;counts&quot;) &lt;- as(assay(sce, &quot;counts&quot;), &quot;dgCMatrix&quot;)
+    
+    sce
+  })
+}</code></pre>
+</div>
+<div id="add-metadata-and-sex-check" class="section level1">
+<h1>4 Add metadata and sex check</h1>
+<pre class="r"><code>outLst &lt;- here(&quot;data&quot;,&quot;SCEs&quot;,&quot;doublet&quot;,paste0(batch_name,&quot;.qc.sceLst.qs&quot;))
+if (!file.exists(outLst)) {
+  sceLst &lt;- lapply(sceLst, function(sce) {
+    # read metadata.csv
+    metadata &lt;- read.csv(here(&quot;data&quot;,
+                              &quot;sample_sheets&quot;,
+                              paste0(levels(sce$Capture),&quot;.metadata.csv&quot;)))
+    
+    i &lt;- match(sce$sampleID, metadata$sampleID)
+    
+    # add patient demographics
+    colData(sce) &lt;- cbind(
+      colData(sce),
+      metadata[i,c(&quot;Age&quot;,&quot;Sex&quot;,&quot;Condition&quot;,&quot;Bronchiectasis&quot;)]
+    )
+    
+    sce
+  })
+  
+  pt.list &lt;- lapply(sceLst, function(sce) {
+      # sex check by the expression of XIST, a female-specific gene. 
+    # this detects certain types of sample-mix-ups.
+    plotExpression(
+      sce, 
+      &quot;XIST&quot;, 
+      x = &quot;sampleID&quot;,
+      colour_by = &quot;Sex&quot;, 
+      exprs_values = &quot;counts&quot;,
+      swap_rownames = &quot;Symbol&quot;) +
+      scale_colour_manual(
+        values = c(
+          &quot;Female&quot; = &quot;deeppink3&quot;, 
+          &quot;Male&quot; = &quot;deepskyblue&quot;),
+        name = &quot;Sex&quot;) +
+      theme_cowplot() + 
+      theme(axis.text.x = element_text(angle = 0, vjust = 1, hjust = 1),
+            axis.title.x = element_blank()) -&gt; p
+    return(p)
+  })
+  
+  do.call(&quot;grid.arrange&quot;, c(pt.list, ncol=4))
+}</code></pre>
+</div>
+<div id="add-feature-based-annotation" class="section level1">
+<h1>5 Add feature-based annotation</h1>
+<pre class="r"><code>if (!file.exists(outLst)) {
+  ah &lt;- AnnotationHub(cache=&quot;/group/canc2/anson/.cache/R/AnnotationHub&quot;, ask=FALSE)
+  EnsDb.Hsapiens.v98 &lt;- query(ah, c(&quot;EnsDb&quot;, &quot;Homo Sapiens&quot;, 98))[[1]]
+    
+  sceLst &lt;- lapply(sceLst, function(sce) {
+    # make feature names unique
+    rownames(sce) &lt;- uniquifyFeatureNames(rowData(sce)$ID, rowData(sce)$Symbol)
+    
+    # prepare ensembl v98 database
+    ensdb_columns &lt;- setNames(c(&quot;GENEBIOTYPE&quot;, &quot;SEQNAME&quot;),
+                              paste0(&quot;ENSEMBL.&quot;,
+                                     c(&quot;GENEBIOTYPE&quot;, &quot;SEQNAME&quot;)))
+    stopifnot(all(ensdb_columns %in% columns(EnsDb.Hsapiens.v98)))
+    
+    ensdb_df &lt;- DataFrame(
+      lapply(ensdb_columns, function(column) {
+        mapIds(
+          x = EnsDb.Hsapiens.v98,
+          keys = rowData(sce)$ID,
+          keytype = &quot;GENEID&quot;,
+          column = column,
+          multiVals = &quot;first&quot;)
+      }),
+      row.names = rowData(sce)$ID)
+    
+    # prepare ncbi database
+    ncbi_columns &lt;- setNames(c(&quot;ALIAS&quot;, &quot;ENTREZID&quot;, &quot;GENENAME&quot;),
+                             paste0(&quot;NCBI.&quot;, c(&quot;ALIAS&quot;, &quot;ENTREZID&quot;, &quot;GENENAME&quot;)))
+    stopifnot(all(ncbi_columns %in% columns(Homo.sapiens)))
+    ncbi_df &lt;- DataFrame(
+      lapply(ncbi_columns, function(column) {
+        mapIds(
+          x = Homo.sapiens,
+          keys = rowData(sce)$ID,
+          keytype = &quot;ENSEMBL&quot;,
+          column = column,
+          multiVals = &quot;CharacterList&quot;)
+      }),
+      row.names = rowData(sce)$ID)
+    
+    rowData(sce) &lt;- cbind(rowData(sce), ensdb_df, ncbi_df)
+    
+    sce
+  })
+}</code></pre>
+</div>
+<div id="qc" class="section level1">
+<h1>6 QC</h1>
+<div id="calculate-metrics" class="section level2">
+<h2>6.1 Calculate metrics</h2>
+<pre class="r"><code>if (!file.exists(outLst)) {
+  sceLst &lt;- lapply(sceLst, function(sce) {
+    # prepare gene sets
+    ## mitochondrial gene set
+    mito_set &lt;- rownames(sce)[which(rowData(sce)$ENSEMBL.SEQNAME == &quot;MT&quot;)]
+    is_mito &lt;- rownames(sce) %in% mito_set
+    summary(is_mito)
+    
+    ## ribosomal gene set
+    ribo_set &lt;- grep(&quot;^RP(S|L)&quot;, rownames(sce), value = TRUE)
+    c2_sets &lt;- msigdbr(species = &quot;Homo sapiens&quot;, category = &quot;C2&quot;)
+    ribo_set &lt;- union(
+      ribo_set,
+      c2_sets[c2_sets$gs_name == &quot;KEGG_RIBOSOME&quot;, ]$human_gene_symbol)
+    is_ribo &lt;- rownames(sce) %in% ribo_set
+    summary(is_ribo)
+    
+    # calculate QC metrics
+    sce &lt;- addPerCellQCMetrics(
+      sce,
+      subsets = list(Mito = which(is_mito),
+                     Ribo = which(is_ribo)), 
+      use.altexps = NULL)
+    
+    sce
+  })
+  qsave(sceLst, file=outLst, nthreads=16)
+} else {
+  sceLst &lt;- qread(outLst, nthreads=16)
+}</code></pre>
+</div>
+<div id="visualize-metrics-before-removal" class="section level2">
+<h2>6.2 Visualize metrics before removal</h2>
+<pre class="r"><code>sample_colours &lt;- setNames(
+    c(palette.colors(10,&quot;Tableau 10&quot;),palette.colors(length(sceLst)-10,&quot;Accent&quot;)),
+    names(sceLst))
+
+# add sample colours
+sceLst &lt;- lapply(sceLst, function(sce) {
+  cols &lt;- setNames(
+    c(sample_colours[levels(sce$sampleID)]),levels(sce$sampleID))
+  # add colour
+  sce$colours &lt;- S4Vectors::make_zero_col_DFrame(ncol(sce))
+  sce$colours$sample_colours &lt;- cols[sce$sampleID]
+  sce
+})
+
+# library size
+pt.lib &lt;- lapply(sceLst, function(sce) {
+  p1 &lt;- plotColData(
+    sce,
+    &quot;sum&quot;,
+    x = &quot;sampleID&quot;,
+    colour_by = &quot;sampleID&quot;,
+    point_size = 0.5) +
+    scale_y_log10() +
+    scale_colour_manual(values = sce$colours$sample_colours, name = &quot;sampleID&quot;) +
+    theme(axis.title.x = element_blank()) + NoLegend()
+  return(p1)
+})
+
+# number of genes detected
+pt.ng &lt;- lapply(sceLst, function(sce) {
+  p2 &lt;- plotColData(
+    sce,
+    &quot;detected&quot;,
+    x = &quot;sampleID&quot;,
+    colour_by = &quot;sampleID&quot;,
+    point_size = 0.5) +
+    scale_colour_manual(values = sce$colours$sample_colours, name = &quot;sampleID&quot;) +
+    theme(axis.title.x = element_blank()) + NoLegend()
+  return(p2)
+})
+
+
+do.call(&quot;grid.arrange&quot;, c(pt.lib, ncol=4))</code></pre>
+<p><img src="figure/02.qc_Pcap.Rmd/unnamed-chunk-7-1.png" width="576" style="display: block; margin: auto;" /></p>
+<pre class="r"><code>do.call(&quot;grid.arrange&quot;, c(pt.ng, ncol=4))</code></pre>
+<p><img src="figure/02.qc_Pcap.Rmd/unnamed-chunk-7-2.png" width="576" style="display: block; margin: auto;" /></p>
+</div>
+<div id="remove-cells-with-features-200" class="section level2">
+<h2>6.3 Remove cells with features &lt; 200</h2>
+<pre class="r"><code>sceLst_pre_QC_outlier_removal &lt;- sceLst
+
+sceLst_pre_QC_outlier_removal &lt;- lapply(sceLst_pre_QC_outlier_removal, function(sce){
+  feature_drop &lt;- sce$detected &lt; 200
+  keep &lt;- !feature_drop
+  sce$keep &lt;- keep
+  sce
+})
+
+sceLst &lt;- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  sce &lt;- sce[, sce$keep]
+  sce
+})
+
+# print results
+do.call(&quot;rbind&quot;,lapply(names(sceLst), function(s) {
+  feature_drop &lt;- sceLst_pre_QC_outlier_removal[[s]]$detected &lt; 200
+  data.frame(
+  ByFeature = tapply(
+    feature_drop, 
+    sceLst_pre_QC_outlier_removal[[s]]$Capture, 
+    sum,
+    na.rm = TRUE),
+  Remaining = as.vector(unname(table(sceLst[[s]]$Capture))),
+  PercRemaining = round(
+    100 * as.vector(unname(table(sceLst[[s]]$Capture))) /
+      as.vector(
+        unname(
+          table(sceLst_pre_QC_outlier_removal[[s]]$Capture))), 1)) |&gt;
+  tibble::rownames_to_column(&quot;Capture&quot;) |&gt;
+  dplyr::arrange(dplyr::desc(PercRemaining)) 
+})) %&gt;% knitr::kable(caption = &quot;Number of droplets remaining.&quot;)</code></pre>
+<table>
+<caption>Number of droplets remaining.</caption>
+<thead>
+<tr class="header">
+<th align="left">Capture</th>
+<th align="right">ByFeature</th>
+<th align="right">Remaining</th>
+<th align="right">PercRemaining</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">M1C191B</td>
+<td align="right">6420</td>
+<td align="right">11141</td>
+<td align="right">63.4</td>
+</tr>
+<tr class="even">
+<td align="left">cf-p15</td>
+<td align="right">1295</td>
+<td align="right">5772</td>
+<td align="right">81.7</td>
+</tr>
+<tr class="odd">
+<td align="left">cf-p14</td>
+<td align="right">1056</td>
+<td align="right">5510</td>
+<td align="right">83.9</td>
+</tr>
+<tr class="even">
+<td align="left">cf-p6</td>
+<td align="right">465</td>
+<td align="right">5810</td>
+<td align="right">92.6</td>
+</tr>
+<tr class="odd">
+<td align="left">cf-p5</td>
+<td align="right">202</td>
+<td align="right">9000</td>
+<td align="right">97.8</td>
+</tr>
+<tr class="even">
+<td align="left">mabsc-p11</td>
+<td align="right">2</td>
+<td align="right">711</td>
+<td align="right">99.7</td>
+</tr>
+<tr class="odd">
+<td align="left">mabsc-p9</td>
+<td align="right">240</td>
+<td align="right">3881</td>
+<td align="right">94.2</td>
+</tr>
+<tr class="even">
+<td align="left">mabsc-p4</td>
+<td align="right">858</td>
+<td align="right">9032</td>
+<td align="right">91.3</td>
+</tr>
+<tr class="odd">
+<td align="left">mabsc-p3</td>
+<td align="right">1130</td>
+<td align="right">6614</td>
+<td align="right">85.4</td>
+</tr>
+<tr class="even">
+<td align="left">mabscpd-p13</td>
+<td align="right">704</td>
+<td align="right">3242</td>
+<td align="right">82.2</td>
+</tr>
+<tr class="odd">
+<td align="left">mabscpd-p12</td>
+<td align="right">337</td>
+<td align="right">8492</td>
+<td align="right">96.2</td>
+</tr>
+<tr class="even">
+<td align="left">mabscpd-p1</td>
+<td align="right">609</td>
+<td align="right">8761</td>
+<td align="right">93.5</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div id="visualize-metrics-after-removal" class="section level2">
+<h2>6.4 Visualize metrics after removal</h2>
+<pre class="r"><code># library size
+pt.lib &lt;- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  p1 &lt;- plotColData(
+    sce,
+    &quot;sum&quot;,
+    x = &quot;sampleID&quot;,
+    colour_by = &quot;keep&quot;,
+    point_size = 0.5) +
+    theme(axis.title.x = element_blank())
+  return(p1)
+})
+
+# number of genes detected
+pt.ng &lt;- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  p2 &lt;- plotColData(
+    sce,
+    &quot;detected&quot;,
+    x = &quot;sampleID&quot;,
+    colour_by = &quot;keep&quot;,
+    point_size = 0.5) +
+    theme(axis.title.x = element_blank())
+  return(p2)
+})
+
+do.call(&quot;grid.arrange&quot;, c(pt.lib, ncol=4))</code></pre>
+<p><img src="figure/02.qc_Pcap.Rmd/unnamed-chunk-9-1.png" width="768" style="display: block; margin: auto;" /></p>
+<pre class="r"><code>do.call(&quot;grid.arrange&quot;, c(pt.ng, ncol=4))</code></pre>
+<p><img src="figure/02.qc_Pcap.Rmd/unnamed-chunk-9-2.png" width="768" style="display: block; margin: auto;" /></p>
+</div>
+</div>
+<div id="doublet-detection" class="section level1">
+<h1>7 Doublet detection</h1>
+<div id="call-doublets" class="section level2">
+<h2>7.1 Call doublets</h2>
+<pre class="r"><code>outLst &lt;- here(&quot;data&quot;,&quot;SCEs&quot;,&quot;doublet&quot;,paste0(batch_name,&quot;.qc.rmDbl.sceLst.qs&quot;))
+if (!file.exists(outLst)) {
+  out &lt;- here(&quot;data&quot;,&quot;SCEs&quot;,&quot;doublet&quot;,paste0(batch_name,&quot;.doublets.SCE.qs&quot;))
+  if(!file.exists(out)){
+    sceLst_pre_QC_outlier_removal &lt;- lapply(sceLst, function(sce){
+      # scds
+      sce1 &lt;- bcds(sce, retRes = TRUE, estNdbl = TRUE)
+      sce1 &lt;- cxds(sce1, retRes = TRUE, estNdbl = TRUE)
+      sce1 &lt;- cxds_bcds_hybrid(sce1, estNdbl = TRUE)
+      # scDblFInder 
+      set.seed(1990)
+      bp &lt;- MulticoreParam(16, RNGseed=1990)
+      sce1 &lt;- scDblFinder(sce1, dbr = ncol(sce1)/1000*0.008, BPPARAM=bp)
+      sce1
+    })
+    
+    lapply(sceLst_pre_QC_outlier_removal, function(s){
+      colData(s) %&gt;% 
+        data.frame %&gt;%
+        rownames_to_column(var = &quot;cell&quot;)
+    }) %&gt;% 
+      bind_rows() %&gt;% 
+      qsave(file = out, nthreads=16)
+    qsave(sceLst_pre_QC_outlier_removal, file=outLst, nthreads=16)
+  }
+} else {
+  sceLst_pre_QC_outlier_removal &lt;- qread(outLst, nthreads=16)
+}</code></pre>
+</div>
+<div id="remove-doublets" class="section level2">
+<h2>7.2 Remove doublets</h2>
+<pre class="r"><code>sceLst &lt;- lapply(sceLst_pre_QC_outlier_removal, function(sce){
+  sce &lt;- sce[, !(sce$hybrid_call &amp; sce$scDblFinder.class == &quot;doublet&quot;)]
+})
+
+# n doublet
+do.call(&quot;rbind&quot;,lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  table(sce$Capture, sce$hybrid_call &amp; sce$scDblFinder.class == &quot;doublet&quot;) 
+})) -&gt; tab
+
+tab %&gt;%
+  knitr::kable(caption = &quot;n doublet called by both scds and scDblFinder&quot;)</code></pre>
+<table>
+<caption>n doublet called by both scds and scDblFinder</caption>
+<thead>
+<tr class="header">
+<th align="left"></th>
+<th align="right">FALSE</th>
+<th align="right">TRUE</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">M1C191B</td>
+<td align="right">10326</td>
+<td align="right">815</td>
+</tr>
+<tr class="even">
+<td align="left">cf-p15</td>
+<td align="right">5520</td>
+<td align="right">252</td>
+</tr>
+<tr class="odd">
+<td align="left">cf-p14</td>
+<td align="right">5273</td>
+<td align="right">237</td>
+</tr>
+<tr class="even">
+<td align="left">cf-p6</td>
+<td align="right">5545</td>
+<td align="right">265</td>
+</tr>
+<tr class="odd">
+<td align="left">cf-p5</td>
+<td align="right">8357</td>
+<td align="right">643</td>
+</tr>
+<tr class="even">
+<td align="left">mabsc-p11</td>
+<td align="right">705</td>
+<td align="right">6</td>
+</tr>
+<tr class="odd">
+<td align="left">mabsc-p9</td>
+<td align="right">3745</td>
+<td align="right">136</td>
+</tr>
+<tr class="even">
+<td align="left">mabsc-p4</td>
+<td align="right">8514</td>
+<td align="right">518</td>
+</tr>
+<tr class="odd">
+<td align="left">mabsc-p3</td>
+<td align="right">6250</td>
+<td align="right">364</td>
+</tr>
+<tr class="even">
+<td align="left">mabscpd-p13</td>
+<td align="right">3142</td>
+<td align="right">100</td>
+</tr>
+<tr class="odd">
+<td align="left">mabscpd-p12</td>
+<td align="right">7872</td>
+<td align="right">620</td>
+</tr>
+<tr class="even">
+<td align="left">mabscpd-p1</td>
+<td align="right">8143</td>
+<td align="right">618</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code># % doublet
+data.frame(pct=round(tab[,2]/(tab[,1]+tab[,2])*100,
+                       digits=3)) %&gt;% 
+  knitr::kable(caption = &quot;% doublet called by both scds and scDblFinder&quot;)</code></pre>
+<table>
+<caption>% doublet called by both scds and scDblFinder</caption>
+<thead>
+<tr class="header">
+<th align="left"></th>
+<th align="right">pct</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">M1C191B</td>
+<td align="right">7.315</td>
+</tr>
+<tr class="even">
+<td align="left">cf-p15</td>
+<td align="right">4.366</td>
+</tr>
+<tr class="odd">
+<td align="left">cf-p14</td>
+<td align="right">4.301</td>
+</tr>
+<tr class="even">
+<td align="left">cf-p6</td>
+<td align="right">4.561</td>
+</tr>
+<tr class="odd">
+<td align="left">cf-p5</td>
+<td align="right">7.144</td>
+</tr>
+<tr class="even">
+<td align="left">mabsc-p11</td>
+<td align="right">0.844</td>
+</tr>
+<tr class="odd">
+<td align="left">mabsc-p9</td>
+<td align="right">3.504</td>
+</tr>
+<tr class="even">
+<td align="left">mabsc-p4</td>
+<td align="right">5.735</td>
+</tr>
+<tr class="odd">
+<td align="left">mabsc-p3</td>
+<td align="right">5.503</td>
+</tr>
+<tr class="even">
+<td align="left">mabscpd-p13</td>
+<td align="right">3.085</td>
+</tr>
+<tr class="odd">
+<td align="left">mabscpd-p12</td>
+<td align="right">7.301</td>
+</tr>
+<tr class="even">
+<td align="left">mabscpd-p1</td>
+<td align="right">7.054</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div id="qc-mitochondrial-percent" class="section level1">
+<h1>8 QC: mitochondrial percent</h1>
+<div id="visualize-metrics-before-removal-1" class="section level2">
+<h2>8.1 Visualize metrics before removal</h2>
+<pre class="r"><code># subsets_Mito_percent
+pt.mito &lt;- lapply(sceLst, function(sce) {
+  p1 &lt;- plotColData(
+    sce,
+    &quot;subsets_Mito_percent&quot;,
+    x = &quot;sampleID&quot;,
+    colour_by = &quot;sampleID&quot;,
+    point_size = 0.5) +
+    scale_y_log10() +
+    scale_colour_manual(values = sce$colours$sample_colours, name = &quot;sampleID&quot;) +
+    theme(axis.title.x = element_blank()) 
+  return(p1)
+})
+
+# number of genes detected
+pt.ribo &lt;- lapply(sceLst, function(sce) {
+  p2 &lt;- plotColData(
+    sce,
+    &quot;subsets_Ribo_percent&quot;,
+    x = &quot;sampleID&quot;,
+    colour_by = &quot;sampleID&quot;,
+    point_size = 0.5) +
+    scale_y_log10() +
+    scale_colour_manual(values = sce$colours$sample_colours, name = &quot;sampleID&quot;) +
+    theme(axis.title.x = element_blank())
+  return(p2)
+})
+
+suppressWarnings(do.call(&quot;grid.arrange&quot;, c(pt.mito, ncol=4)))</code></pre>
+<p><img src="figure/02.qc_Pcap.Rmd/unnamed-chunk-12-1.png" width="768" style="display: block; margin: auto;" /></p>
+<pre class="r"><code>suppressWarnings(do.call(&quot;grid.arrange&quot;, c(pt.ribo, ncol=4)))</code></pre>
+<p><img src="figure/02.qc_Pcap.Rmd/unnamed-chunk-12-2.png" width="768" style="display: block; margin: auto;" /></p>
+</div>
+<div id="remove-cells-with-10-mitochondrial-reads" class="section level2">
+<h2>8.2 Remove cells with &gt;10% mitochondrial reads</h2>
+<pre class="r"><code>sceLst_pre_QC_outlier_removal &lt;- sceLst
+
+sceLst_pre_QC_outlier_removal &lt;- lapply(sceLst_pre_QC_outlier_removal, function(sce){
+  mito_drop &lt;- sce$subsets_Mito_percent &gt; 10
+  keep &lt;- !mito_drop
+  sce$keep &lt;- keep
+  sce
+})
+
+sceLst &lt;- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  sce &lt;- sce[, sce$keep]
+  sce
+})
+
+# print results
+do.call(&quot;rbind&quot;,lapply(names(sceLst), function(s) {
+  mito_drop &lt;- sceLst_pre_QC_outlier_removal[[s]]$subsets_Mito_percent &gt; 10
+  data.frame(
+  ByMito = tapply(
+    mito_drop, 
+    sceLst_pre_QC_outlier_removal[[s]]$Capture, 
+    sum,
+    na.rm = TRUE),
+  Remaining = as.vector(unname(table(sceLst[[s]]$Capture))),
+  PercRemaining = round(
+    100 * as.vector(unname(table(sceLst[[s]]$Capture))) /
+      as.vector(
+        unname(
+          table(sceLst_pre_QC_outlier_removal[[s]]$Capture))), 1)) |&gt;
+  tibble::rownames_to_column(&quot;Capture&quot;) |&gt;
+  dplyr::arrange(dplyr::desc(PercRemaining))
+})) %&gt;% knitr::kable(caption = &quot;Number of droplets remaining.&quot;)</code></pre>
+<table>
+<caption>Number of droplets remaining.</caption>
+<thead>
+<tr class="header">
+<th align="left">Capture</th>
+<th align="right">ByMito</th>
+<th align="right">Remaining</th>
+<th align="right">PercRemaining</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">M1C191B</td>
+<td align="right">462</td>
+<td align="right">9864</td>
+<td align="right">95.5</td>
+</tr>
+<tr class="even">
+<td align="left">cf-p15</td>
+<td align="right">550</td>
+<td align="right">4970</td>
+<td align="right">90.0</td>
+</tr>
+<tr class="odd">
+<td align="left">cf-p14</td>
+<td align="right">1442</td>
+<td align="right">3831</td>
+<td align="right">72.7</td>
+</tr>
+<tr class="even">
+<td align="left">cf-p6</td>
+<td align="right">59</td>
+<td align="right">5486</td>
+<td align="right">98.9</td>
+</tr>
+<tr class="odd">
+<td align="left">cf-p5</td>
+<td align="right">791</td>
+<td align="right">7566</td>
+<td align="right">90.5</td>
+</tr>
+<tr class="even">
+<td align="left">mabsc-p11</td>
+<td align="right">9</td>
+<td align="right">696</td>
+<td align="right">98.7</td>
+</tr>
+<tr class="odd">
+<td align="left">mabsc-p9</td>
+<td align="right">248</td>
+<td align="right">3497</td>
+<td align="right">93.4</td>
+</tr>
+<tr class="even">
+<td align="left">mabsc-p4</td>
+<td align="right">417</td>
+<td align="right">8097</td>
+<td align="right">95.1</td>
+</tr>
+<tr class="odd">
+<td align="left">mabsc-p3</td>
+<td align="right">211</td>
+<td align="right">6039</td>
+<td align="right">96.6</td>
+</tr>
+<tr class="even">
+<td align="left">mabscpd-p13</td>
+<td align="right">250</td>
+<td align="right">2892</td>
+<td align="right">92.0</td>
+</tr>
+<tr class="odd">
+<td align="left">mabscpd-p12</td>
+<td align="right">1017</td>
+<td align="right">6855</td>
+<td align="right">87.1</td>
+</tr>
+<tr class="even">
+<td align="left">mabscpd-p1</td>
+<td align="right">717</td>
+<td align="right">7426</td>
+<td align="right">91.2</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div id="visualize-metrics-after-removal-1" class="section level2">
+<h2>8.3 Visualize metrics after removal</h2>
+<pre class="r"><code># subsets_Mito_percent
+pt.mito &lt;- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  p1 &lt;- plotColData(
+    sce,
+    &quot;subsets_Mito_percent&quot;,
+    x = &quot;sampleID&quot;,
+    colour_by = &quot;keep&quot;,
+    point_size = 0.5) +
+    scale_y_log10() +
+    theme(axis.title.x = element_blank())
+  return(p1)
+})
+
+# number of genes detected
+pt.ribo &lt;- lapply(sceLst_pre_QC_outlier_removal, function(sce) {
+  p2 &lt;- plotColData(
+    sce,
+    &quot;subsets_Ribo_percent&quot;,
+    x = &quot;sampleID&quot;,
+    colour_by = &quot;keep&quot;,
+    point_size = 0.5) +
+    scale_y_log10() +
+    theme(axis.title.x = element_blank())
+  return(p2)
+})
+
+suppressWarnings(do.call(&quot;grid.arrange&quot;, c(pt.mito, ncol=4)))</code></pre>
+<p><img src="figure/02.qc_Pcap.Rmd/unnamed-chunk-14-1.png" width="768" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-14-1">
+Past versions of unnamed-chunk-14-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-14-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/e6e327b879dd8af4a2e27876e0955fc1f186bda1/docs/figure/02.qc_Pcap.Rmd/unnamed-chunk-14-1.png" target="_blank">e6e327b</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<pre class="r"><code>suppressWarnings(do.call(&quot;grid.arrange&quot;, c(pt.ribo, ncol=4)))</code></pre>
+<p><img src="figure/02.qc_Pcap.Rmd/unnamed-chunk-14-2.png" width="768" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-14-2">
+Past versions of unnamed-chunk-14-2.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-14-2" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/e6e327b879dd8af4a2e27876e0955fc1f186bda1/docs/figure/02.qc_Pcap.Rmd/unnamed-chunk-14-2.png" target="_blank">e6e327b</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</div>
+<div id="number-of-droplets-retained-after-qc" class="section level1">
+<h1>9 Number of droplets retained after QC</h1>
+<pre class="r"><code>pt.n &lt;- lapply(sceLst, function(sce) {
+  # number of droplets assigned by HTO method
+  p1 &lt;- ggcells(sce) + 
+    geom_bar(aes(x = sampleID, fill = sampleID)) + 
+    geom_text(stat=&#39;count&#39;, aes(x = sampleID, label=..count..), hjust=1, size=2) +
+    coord_flip() + 
+    ggtitle(levels(sce$Capture)) +
+    ylab(&quot;Number of droplets&quot;) + 
+    theme_cowplot(font_size = 8) + 
+    scale_y_continuous(breaks=seq(0,16000,4000),limits=c(0,16000)) +
+    scale_fill_manual(values = sce$colours$sample_colours) +
+    theme(axis.title.y = element_blank(),
+          axis.text.y = element_blank(),
+          axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+    guides(fill=guide_legend(title=&quot;sampleID&quot;)) + NoLegend()
+  return(p1)
+})
+
+suppressWarnings(do.call(&quot;grid.arrange&quot;, c(pt.n, ncol=3)))</code></pre>
+<p><img src="figure/02.qc_Pcap.Rmd/unnamed-chunk-15-1.png" width="768" style="display: block; margin: auto;" /></p>
+<p>
+<button type="button" class="btn btn-default btn-xs btn-workflowr btn-workflowr-fig" data-toggle="collapse" data-target="#fig-unnamed-chunk-15-1">
+Past versions of unnamed-chunk-15-1.png
+</button>
+</p>
+<div id="fig-unnamed-chunk-15-1" class="collapse">
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+<thead>
+<tr>
+<th>
+Version
+</th>
+<th>
+Author
+</th>
+<th>
+Date
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<a href="https://github.com/ansontcw/cf-pbmc-bal-scrna/blob/e6e327b879dd8af4a2e27876e0955fc1f186bda1/docs/figure/02.qc_Pcap.Rmd/unnamed-chunk-15-1.png" target="_blank">e6e327b</a>
+</td>
+<td>
+tcwong1994
+</td>
+<td>
+2026-04-23
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<div id="save-object" class="section level1">
+<h1>10 Save object</h1>
+<pre class="r"><code>prep_dir &lt;- here(&quot;data&quot;,&quot;SCEs&quot;,&quot;preprocessed&quot;)
+if(!dir.exists(prep_dir)) {
+  dir.create(prep_dir, recursive = TRUE)
+}
+
+out &lt;- here(&quot;data&quot;,&quot;SCEs&quot;,&quot;preprocessed&quot;,paste0(batch_name,&quot;.preprocessed.sceLst.qs&quot;))
+if(!file.exists(out)) {
+  qsave(sceLst, out, nthreads=16)
+}</code></pre>
+<br>
+<p>
+<button type="button" class="btn btn-default btn-workflowr btn-workflowr-sessioninfo" data-toggle="collapse" data-target="#workflowr-sessioninfo" style="display: block;">
+<span class="glyphicon glyphicon-wrench" aria-hidden="true"></span> Session information
+</button>
+</p>
+<div id="workflowr-sessioninfo" class="collapse">
+<pre class="r"><code>sessionInfo()</code></pre>
+<pre><code>R version 4.1.2 (2021-11-01)
+Platform: x86_64-pc-linux-gnu (64-bit)
+Running under: CentOS Linux 7 (Core)
+
+Matrix products: default
+BLAS:   /hpc/software/installed/R/4.1.2/lib64/R/lib/libRblas.so
+LAPACK: /hpc/software/installed/R/4.1.2/lib64/R/lib/libRlapack.so
+
+locale:
+ [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C              
+ [3] LC_TIME=en_US.UTF-8        LC_COLLATE=en_US.UTF-8    
+ [5] LC_MONETARY=en_US.UTF-8    LC_MESSAGES=en_US.UTF-8   
+ [7] LC_PAPER=en_US.UTF-8       LC_NAME=C                 
+ [9] LC_ADDRESS=C               LC_TELEPHONE=C            
+[11] LC_MEASUREMENT=en_US.UTF-8 LC_IDENTIFICATION=C       
+
+attached base packages:
+[1] stats4    stats     graphics  grDevices utils     datasets  methods  
+[8] base     
+
+other attached packages:
+ [1] gridExtra_2.3                          
+ [2] future.apply_1.11.2                    
+ [3] future_1.33.2                          
+ [4] tibble_3.2.1                           
+ [5] BiocParallel_1.28.3                    
+ [6] scDblFinder_1.8.0                      
+ [7] pROC_1.18.0                            
+ [8] xgboost_1.7.9.1                        
+ [9] qs_0.27.2                              
+[10] Homo.sapiens_1.3.1                     
+[11] TxDb.Hsapiens.UCSC.hg19.knownGene_3.2.2
+[12] org.Hs.eg.db_3.14.0                    
+[13] GO.db_3.14.0                           
+[14] OrganismDbi_1.36.0                     
+[15] msigdbr_7.5.1                          
+[16] ensembldb_2.18.4                       
+[17] AnnotationFilter_1.22.0                
+[18] GenomicFeatures_1.46.4                 
+[19] AnnotationDbi_1.56.2                   
+[20] AnnotationHub_3.2.2                    
+[21] BiocFileCache_2.6.1                    
+[22] dbplyr_2.1.1                           
+[23] stringr_1.5.1                          
+[24] janitor_2.1.0                          
+[25] forcats_1.0.1                          
+[26] dplyr_1.1.4                            
+[27] scater_1.22.0                          
+[28] scuttle_1.4.0                          
+[29] patchwork_1.2.0                        
+[30] cowplot_1.1.3                          
+[31] SeuratObject_5.0.1                     
+[32] Seurat_4.4.0                           
+[33] ggplot2_3.5.2                          
+[34] here_1.0.1                             
+[35] DropletUtils_1.14.2                    
+[36] SingleCellExperiment_1.16.0            
+[37] SummarizedExperiment_1.24.0            
+[38] Biobase_2.54.0                         
+[39] GenomicRanges_1.46.1                   
+[40] GenomeInfoDb_1.30.1                    
+[41] IRanges_2.28.0                         
+[42] S4Vectors_0.32.4                       
+[43] BiocGenerics_0.40.0                    
+[44] MatrixGenerics_1.6.0                   
+[45] matrixStats_1.1.0                      
+[46] workflowr_1.7.0                        
+
+loaded via a namespace (and not attached):
+  [1] rappdirs_0.3.3                rtracklayer_1.54.0           
+  [3] scattermore_1.2               R.methodsS3_1.8.1            
+  [5] tidyr_1.3.1                   bit64_4.6.0-1                
+  [7] knitr_1.46                    irlba_2.3.5.1                
+  [9] DelayedArray_0.20.0           R.utils_2.12.2               
+ [11] data.table_1.15.4             KEGGREST_1.34.0              
+ [13] RCurl_1.98-1.9                generics_0.1.3               
+ [15] ScaledMatrix_1.2.0            callr_3.7.3                  
+ [17] RSQLite_2.3.6                 RApiSerialize_0.1.4          
+ [19] RANN_2.6.1                    bit_4.0.5                    
+ [21] spatstat.data_3.0-4           xml2_1.3.3                   
+ [23] lubridate_1.8.0               httpuv_1.6.15                
+ [25] assertthat_0.2.1              viridis_0.6.2                
+ [27] xfun_0.43                     hms_1.1.4                    
+ [29] jquerylib_0.1.4               babelgene_22.9               
+ [31] evaluate_0.23                 promises_1.3.0               
+ [33] restfulr_0.0.15               fansi_1.0.6                  
+ [35] progress_1.2.3                igraph_2.0.3                 
+ [37] DBI_1.2.2                     htmlwidgets_1.6.4            
+ [39] spatstat.geom_3.2-9           purrr_1.2.1                  
+ [41] RcppParallel_5.1.10           biomaRt_2.50.3               
+ [43] deldir_2.0-4                  sparseMatrixStats_1.6.0      
+ [45] vctrs_0.6.5                   ROCR_1.0-11                  
+ [47] abind_1.4-8                   cachem_1.0.8                 
+ [49] withr_3.0.0                   progressr_0.14.0             
+ [51] sctransform_0.4.1             GenomicAlignments_1.30.0     
+ [53] scran_1.22.1                  prettyunits_1.2.0            
+ [55] xaringanExtra_0.7.0           goftest_1.2-3                
+ [57] cluster_2.1.8.1               dotCall64_1.1-1              
+ [59] lazyeval_0.2.2                crayon_1.5.2                 
+ [61] spatstat.explore_3.2-7        labeling_0.4.3               
+ [63] edgeR_4.4.2                   pkgconfig_2.0.3              
+ [65] ProtGenerics_1.30.0           nlme_3.1-155                 
+ [67] vipor_0.4.5                   rlang_1.1.3                  
+ [69] globals_0.16.3                lifecycle_1.0.4              
+ [71] miniUI_0.1.1.1                filelock_1.0.3               
+ [73] rsvd_1.0.5                    rprojroot_2.1.1              
+ [75] polyclip_1.10-6               lmtest_0.9-40                
+ [77] graph_1.72.0                  Matrix_1.6-5                 
+ [79] Rhdf5lib_1.16.0               zoo_1.8-12                   
+ [81] beeswarm_0.4.0                whisker_0.4                  
+ [83] ggridges_0.5.6                processx_3.8.0               
+ [85] stringfish_0.16.0             rjson_0.2.21                 
+ [87] png_0.1-8                     viridisLite_0.4.2            
+ [89] bitops_1.0-9                  getPass_0.2-2                
+ [91] R.oo_1.24.0                   KernSmooth_2.23-20           
+ [93] spam_2.10-0                   rhdf5filters_1.6.0           
+ [95] Biostrings_2.62.0             blob_1.2.4                   
+ [97] DelayedMatrixStats_1.16.0     parallelly_1.37.1            
+ [99] spatstat.random_3.2-3         beachmat_2.10.0              
+[101] scales_1.3.0                  memoise_2.0.1                
+[103] magrittr_2.0.3                plyr_1.8.9                   
+[105] ica_1.0-3                     zlibbioc_1.48.2              
+[107] compiler_4.1.2                BiocIO_1.8.0                 
+[109] dqrng_0.3.2                   RColorBrewer_1.1-3           
+[111] fitdistrplus_1.1-11           Rsamtools_2.10.0             
+[113] snakecase_0.11.0              cli_3.6.2                    
+[115] XVector_0.34.0                listenv_0.9.1                
+[117] pbapply_1.7-2                 ps_1.7.2                     
+[119] MASS_7.3-55                   tidyselect_1.2.1             
+[121] stringi_1.8.3                 highr_0.10                   
+[123] yaml_2.3.8                    BiocSingular_1.10.0          
+[125] locfit_1.5-9.4                ggrepel_0.9.1                
+[127] grid_4.1.2                    sass_0.4.9                   
+[129] tools_4.1.2                   parallel_4.1.2               
+[131] rstudioapi_0.13               bluster_1.4.0                
+[133] git2r_0.31.0                  metapod_1.2.0                
+[135] farver_2.1.1                  Rtsne_0.17                   
+[137] digest_0.6.35                 BiocManager_1.30.25          
+[139] shiny_1.8.1.1                 Rcpp_1.0.12                  
+[141] BiocVersion_3.18.1            later_1.3.2                  
+[143] RcppAnnoy_0.0.22              httr_1.4.7                   
+[145] colorspace_2.1-0              XML_3.99-0.16.1              
+[147] fs_1.6.4                      tensor_1.5.1                 
+[149] reticulate_1.36.1.9000        splines_4.1.2                
+[151] RBGL_1.70.0                   uwot_0.1.14                  
+[153] statmod_1.5.0                 spatstat.utils_3.1-3         
+[155] sp_2.1-3                      plotly_4.10.4.9000           
+[157] xtable_1.8-4                  jsonlite_1.8.8               
+[159] R6_2.6.1                      pillar_1.9.0                 
+[161] htmltools_0.5.8.1             mime_0.12                    
+[163] glue_1.7.0                    fastmap_1.1.1                
+[165] BiocNeighbors_1.12.0          interactiveDisplayBase_1.32.0
+[167] codetools_0.2-20              utf8_1.2.4                   
+[169] lattice_0.22-7                bslib_0.3.1                  
+[171] spatstat.sparse_3.0-3         curl_5.2.1                   
+[173] ggbeeswarm_0.6.0              leiden_0.4.3.1               
+[175] survival_3.2-13               limma_3.62.2                 
+[177] rmarkdown_2.26                munsell_0.5.1                
+[179] rhdf5_2.38.1                  GenomeInfoDbData_1.2.11      
+[181] HDF5Array_1.22.1              reshape2_1.4.4               
+[183] gtable_0.3.5                 </code></pre>
+</div>
+</div>
+
+
+<!-- Adjust MathJax settings so that all math formulae are shown using
+TeX fonts only; see
+https://docs.mathjax.org/en/latest/web/configuration.html. This will make
+the presentation more consistent at the cost of the webpage sometimes
+taking slightly longer to load. Note that this only works because the
+footer is added to webpages before the MathJax javascript. -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    "HTML-CSS": { availableFonts: ["TeX"] }
+  });
+</script>
+
+
+
+
+</div>
+</div>
+
+</div>
+
+<script>
+
+// add bootstrap table styles to pandoc tables
+function bootstrapStylePandocTables() {
+  $('tr.odd').parent('tbody').parent('table').addClass('table table-condensed');
+}
+$(document).ready(function () {
+  bootstrapStylePandocTables();
+});
+
+
+</script>
+
+<!-- tabsets -->
+
+<script>
+$(document).ready(function () {
+  window.buildTabsets("TOC");
+});
+
+$(document).ready(function () {
+  $('.tabset-dropdown > .nav-tabs > li').click(function () {
+    $(this).parent().toggleClass('nav-tabs-open');
+  });
+});
+</script>
+
+<!-- code folding -->
+
+<script>
+$(document).ready(function ()  {
+
+    // temporarily add toc-ignore selector to headers for the consistency with Pandoc
+    $('.unlisted.unnumbered').addClass('toc-ignore')
+
+    // move toc-ignore selectors from section div to header
+    $('div.section.toc-ignore')
+        .removeClass('toc-ignore')
+        .children('h1,h2,h3,h4,h5').addClass('toc-ignore');
+
+    // establish options
+    var options = {
+      selectors: "h1,h2,h3",
+      theme: "bootstrap3",
+      context: '.toc-content',
+      hashGenerator: function (text) {
+        return text.replace(/[.\\/?&!#<>]/g, '').replace(/\s/g, '_');
+      },
+      ignoreSelector: ".toc-ignore",
+      scrollTo: 0
+    };
+    options.showAndHide = true;
+    options.smoothScroll = true;
+
+    // tocify
+    var toc = $("#TOC").tocify(options).data("toc-tocify");
+});
+</script>
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>

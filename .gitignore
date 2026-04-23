@@ -1,0 +1,21 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.Rapp.history
+.DS_Store
+analysis/figure
+analysis/*png
+analysis/*html
+analysis/*_cache
+analysis/site_libs
+._.DS_Store
+.DS_Store
+
+# macOS AppleDouble
+._*
+.DS_Store
+
+# macOS junk
+._*
+.DS_Store

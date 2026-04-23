@@ -1,0 +1,1241 @@
+---
+title: 'BAL cytokine analysis'
+author:
+- name: Anson Wong
+  affiliation: Molecular Immunity, Murdoch Children's Research Institute
+date: "`r Sys.Date()`"
+description: null
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()
+
+```
+
+# 1 Load packages
+```{r}
+suppressPackageStartupMessages({
+library(Seurat)
+library(here)
+library(qs)
+library(forcats)
+library(pals)
+library(ggplot2)
+library(ggpubr)
+library(rstatix)
+library(patchwork)
+library(dplyr)
+library(readr)
+library(cowplot)
+library(ComplexHeatmap)
+library(circlize)
+library(RColorBrewer)
+library(grid) 
+library(tibble)
+library(purrr)
+library(ggrepel)
+library(scales)
+library(tidyr)
+library(ggrepel)
+library(scales)
+library(lubridate)
+library(sva)
+library(stringr)
+library(vctrs)
+library(limma)
+library(kableExtra)
+library(aod)
+library(ggrepel)
+library(broom)
+library(mixOmics)
+library(logistf)
+})
+set.seed(1990)
+
+```
+
+# 2 Prepare objects
+## 2.1 Subset samples with paired BAL and PBMC
+```{r}
+res.previous <- qread("/group/canc2/anson/working/cf-eti-bal/data/cytokine/res.master.qs")
+chapter1_ids <- res.previous$meta$Record_ID
+chapter1_ids
+```
+```{r}
+## Load current BAL object (adjust path if needed)
+res.final.bal <- qread(here("data","cytokine","res_bal.master.qs"))
+
+## Your previous "chapter 1" cohort IDs
+res.previous  <- qread("/group/canc2/anson/working/cf-eti-bal/data/cytokine/res.master.qs")
+chapter1_ids  <- as.character(res.previous$meta$Record_ID)
+
+## BAL record IDs
+bal_ids <- as.character(res.final.bal$meta$Record_ID)
+
+## 1) Which chapter1_ids are present in BAL (keep the chapter1 order)
+chapter1_in_bal <- chapter1_ids[chapter1_ids %in% bal_ids]
+chapter1_not_in_bal <- setdiff(chapter1_ids, bal_ids)
+
+cat("BAL contains", length(chapter1_in_bal), "of", length(chapter1_ids), "chapter1_ids\n\n")
+
+cat("chapter1_ids that ARE in res.final.bal (in chapter1 order):\n")
+print(chapter1_in_bal)
+
+cat("\nchapter1_ids that are NOT in res.final.bal:\n")
+print(chapter1_not_in_bal)
+
+## 2) (Optional) Show where they occur in BAL meta (indices / order in BAL)
+bal_positions <- match(chapter1_in_bal, bal_ids)
+out <- data.frame(
+  Record_ID = chapter1_in_bal,
+  bal_row_index = bal_positions,
+  stringsAsFactors = FALSE
+)
+
+cat("\nPositions in BAL meta (smaller index = earlier in BAL):\n")
+print(out[order(out$bal_row_index), ])
+```
+
+```{r}
+## Load
+res.final.bal  <- qread(here("data","cytokine","res_bal.master.qs"))
+res.final.pbmc <- qread(here("data","cytokine","res_pbmc.master.qs"))
+
+## NEW: load chapter1_ids
+res.previous <- qread("/group/canc2/anson/working/cf-eti-bal/data/cytokine/res.master.qs")
+chapter1_ids <- as.character(res.previous$meta$Record_ID)
+
+## Backup (so you can always revert)
+res.final.bal.backup  <- res.final.bal
+res.final.pbmc.backup <- res.final.pbmc
+
+## Helper: subset a res.final-like object by Record_ID (keeps order)
+subset_res_final_by_ids <- function(res, ids) {
+  ids <- as.character(ids)
+  stopifnot(all(ids %in% res$meta$Record_ID))
+
+  meta_sub <- res$meta[match(ids, res$meta$Record_ID), , drop = FALSE]
+
+  res_sub <- res
+  res_sub$meta        <- meta_sub
+  res_sub$raw         <- res$raw[ids, , drop = FALSE]
+  res_sub$expr_log    <- res$expr_log[ids, , drop = FALSE]
+  res_sub$expr_combat <- res$expr_combat[ids, , drop = FALSE]
+
+  # keep cyto_vars consistent with expr matrices (optional but safe)
+  res_sub$cyto_vars <- intersect(res$cyto_vars, colnames(res_sub$expr_combat))
+
+  # sanity
+  stopifnot(identical(rownames(res_sub$raw),         res_sub$meta$Record_ID))
+  stopifnot(identical(rownames(res_sub$expr_log),    res_sub$meta$Record_ID))
+  stopifnot(identical(rownames(res_sub$expr_combat), res_sub$meta$Record_ID))
+
+  res_sub
+}
+
+## 1) Find shared (Subject_ID, Age) keys across BAL and PBMC
+bal_keys <- res.final.bal$meta %>%
+  dplyr::transmute(
+    Record_ID  = as.character(Record_ID),
+    Subject_ID = as.character(Subject_ID),
+    Age_num    = suppressWarnings(as.numeric(Age))
+  ) %>%
+  dplyr::filter(!is.na(Subject_ID), !is.na(Age_num))
+
+pbmc_keys <- res.final.pbmc$meta %>%
+  dplyr::transmute(
+    Record_ID  = as.character(Record_ID),
+    Subject_ID = as.character(Subject_ID),
+    Age_num    = suppressWarnings(as.numeric(Age))
+  ) %>%
+  dplyr::filter(!is.na(Subject_ID), !is.na(Age_num))
+
+common_pairs <- dplyr::inner_join(
+  bal_keys  %>% dplyr::distinct(Subject_ID, Age_num),
+  pbmc_keys %>% dplyr::distinct(Subject_ID, Age_num),
+  by = c("Subject_ID", "Age_num")
+)
+
+cat("Shared (Subject_ID, Age) pairs:", nrow(common_pairs), "\n")
+
+## 2) Subset each object to those shared (Subject_ID, Age) pairs
+bal_keep <- dplyr::inner_join(bal_keys, common_pairs, by = c("Subject_ID", "Age_num"))
+pbmc_keep <- dplyr::inner_join(pbmc_keys, common_pairs, by = c("Subject_ID", "Age_num"))
+
+# If there are multiple records per (Subject_ID, Age) within a sample type, choose one deterministically:
+# keep the first in the current meta order.
+bal_keep <- bal_keep %>%
+  dplyr::mutate(.ord = match(Record_ID, res.final.bal$meta$Record_ID)) %>%
+  dplyr::arrange(Subject_ID, Age_num, .ord) %>%
+  dplyr::group_by(Subject_ID, Age_num) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup()
+
+pbmc_keep <- pbmc_keep %>%
+  dplyr::mutate(.ord = match(Record_ID, res.final.pbmc$meta$Record_ID)) %>%
+  dplyr::arrange(Subject_ID, Age_num, .ord) %>%
+  dplyr::group_by(Subject_ID, Age_num) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup()
+
+## 3) Make order identical across BAL and PBMC by sorting on (Subject_ID, Age)
+bal_keep  <- bal_keep  %>% dplyr::arrange(Subject_ID, Age_num)
+pbmc_keep <- pbmc_keep %>% dplyr::arrange(Subject_ID, Age_num)
+
+res.final.bal  <- subset_res_final_by_ids(res.final.bal,  bal_keep$Record_ID)
+res.final.pbmc <- subset_res_final_by_ids(res.final.pbmc, pbmc_keep$Record_ID)
+
+## NEW: after pairing, further restrict to chapter1_ids (intersection), keeping current order
+keep_both <- intersect(res.final.bal$meta$Record_ID, chapter1_ids)
+res.final.bal  <- subset_res_final_by_ids(res.final.bal,  keep_both)
+res.final.pbmc <- subset_res_final_by_ids(res.final.pbmc, keep_both)
+
+## 4) Error if paired rows do not have identical BASE Record_ID (i.e. ignoring _bal/_pbmc)
+bal_base  <- sub("_(bal|pbmc)$", "", res.final.bal$meta$Record_ID,  ignore.case = TRUE)
+pbmc_base <- sub("_(bal|pbmc)$", "", res.final.pbmc$meta$Record_ID, ignore.case = TRUE)
+
+if (!identical(bal_base, pbmc_base)) {
+  bad <- which(bal_base != pbmc_base)
+  stop(
+    "Paired BAL/PBMC records are not aligned by Record_ID base. Examples:\n",
+    paste0(
+      "  [", bad[seq_len(min(20, length(bad)))], "] ",
+      res.final.bal$meta$Record_ID[bad[seq_len(min(20, length(bad)))], drop=TRUE],
+      " vs ",
+      res.final.pbmc$meta$Record_ID[bad[seq_len(min(20, length(bad)))], drop=TRUE]
+    ) %>% paste(collapse = "\n")
+  )
+}
+
+cat("OK: BAL and PBMC have identical paired Record_ID base for all kept rows.\n")
+cat("n paired samples:", nrow(res.final.bal$meta), "BAL and", nrow(res.final.pbmc$meta), "PBMC\n")
+
+age_stats_list <- tapply(
+  res.final.bal$meta$Age,
+  res.final.bal$meta$Condition2,
+  function(x) {
+    out <- c(
+      n      = sum(!is.na(x)),
+      mean   = ifelse(all(is.na(x)), NA, mean(x, na.rm = TRUE)),
+      sd     = ifelse(all(is.na(x)), NA, sd(x, na.rm = TRUE)),
+      median = ifelse(all(is.na(x)), NA, median(x, na.rm = TRUE))
+    )
+    round(out, 2)
+  },
+  simplify = FALSE
+)
+
+age_stats <- do.call(rbind, age_stats_list)
+rownames(age_stats) <- names(age_stats_list)
+cat("\nAge summary by Condition2 (n, mean, sd, median):\n")
+print(age_stats)
+
+# save
+qsave(res.final.bal,here("data","cytokine","res_bal_paired.master.qs"))
+qsave(res.final.pbmc,here("data","cytokine","res_pbmc_paired.master.qs"))
+
+saveRDS(res.final.bal,here("data","cytokine","res_bal_paired.master.rds"))
+saveRDS(res.final.pbmc,here("data","cytokine","res_pbmc_paired.master.rds"))
+```
+
+## 2.2 Combine
+```{r}
+lod_fallback <- 1e-3
+
+# 1) Stamp Sample_type and enforce suffixed Record_ID + rownames
+stamp_type <- function(res, type = c("BAL","PBMC")) {
+  type <- match.arg(type)
+
+  res$meta$Sample_type <- type
+  res$meta$Record_ID   <- as.character(res$meta$Record_ID)
+
+  # add suffix only if missing
+  suf <- if (type == "BAL") "_bal" else "_pbmc"
+  need <- !grepl("_(bal|pbmc)$", res$meta$Record_ID, ignore.case = TRUE)
+  if (any(need)) res$meta$Record_ID[need] <- paste0(res$meta$Record_ID[need], suf)
+
+  # sync rownames everywhere to the (now unique) Record_ID
+  rn <- res$meta$Record_ID
+  rownames(res$raw)         <- rn
+  rownames(res$expr_log)    <- rn
+  rownames(res$expr_combat) <- rn
+
+  res
+}
+
+# 2) pad matrix columns to a target set and fill missing entries with 1/2 LOD
+pad_halfLOD <- function(mat, cols, lod_fallback = 1e-3) {
+  mat <- as.matrix(mat); storage.mode(mat) <- "numeric"
+  miss <- setdiff(cols, colnames(mat))
+  if (length(miss)) mat <- cbind(mat, matrix(NA_real_, nrow(mat), length(miss),
+                                            dimnames = list(rownames(mat), miss)))
+  mat <- mat[, cols, drop = FALSE]
+
+  for (v in cols) {
+    x <- mat[, v]
+    lod <- suppressWarnings(min(x[is.finite(x) & !is.na(x) & x > 0], na.rm = TRUE))
+    if (!is.finite(lod)) lod <- lod_fallback
+    mat[is.na(x) | !is.finite(x), v] <- 0.5 * lod
+  }
+  mat
+}
+
+# 3) pad data.frame columns to union (NA for missing)
+pad_df <- function(df, cols) { df[setdiff(cols, names(df))] <- NA; df[, cols, drop = FALSE] }
+
+# --- apply ---
+res.final.bal  <- stamp_type(res.final.bal,  "BAL")
+res.final.pbmc <- stamp_type(res.final.pbmc, "PBMC")
+
+# union cytokines
+cyto_all <- union(colnames(res.final.bal$expr_combat), colnames(res.final.pbmc$expr_combat))
+
+# harmonize matrices to same cytokines (fill missing with 1/2 LOD)
+bal_log <- pad_halfLOD(res.final.bal$expr_log,    cyto_all, lod_fallback)
+bal_com <- pad_halfLOD(res.final.bal$expr_combat, cyto_all, lod_fallback)
+pbm_log <- pad_halfLOD(res.final.pbmc$expr_log,    cyto_all, lod_fallback)
+pbm_com <- pad_halfLOD(res.final.pbmc$expr_combat, cyto_all, lod_fallback)
+
+# union raw/meta cols so rbind works
+raw_cols  <- union(names(res.final.bal$raw),  names(res.final.pbmc$raw))
+meta_cols <- union(names(res.final.bal$meta), names(res.final.pbmc$meta))
+
+# combine
+res.final <- list(
+  raw         = rbind(pad_df(res.final.bal$raw, raw_cols),  pad_df(res.final.pbmc$raw, raw_cols)),
+  meta        = dplyr::bind_rows(pad_df(res.final.bal$meta, meta_cols), pad_df(res.final.pbmc$meta, meta_cols)),
+  cyto_vars   = cyto_all,
+  expr_log    = rbind(bal_log, pbm_log),
+  expr_combat = rbind(bal_com, pbm_com)
+)
+
+# final checks
+stopifnot(!anyDuplicated(res.final$meta$Record_ID))
+stopifnot(identical(rownames(res.final$expr_combat), res.final$meta$Record_ID))
+table(res.final$meta$Sample_type, useNA = "ifany")
+```
+
+# 3 PCA
+## 3.1 Fibrotic cytokine list
+```{r}
+fibro.cytokines <- c(
+  "BAFF/TNFSF13B", "sCD30/TNFRSF8", "sCD163", "Chitinase-3-like1",
+  "gp130/sIL-6Rβ", "sIL-6Rα", "Osteopontin", "Pentraxin-3", "TSLP",
+  "TWEAK/TNFSF12", "FGFbasic", "Eotaxin", "IL-1β", "IL-5",
+  "IL-8", "IL-13", "MCP-1(MCAF)", "SDF-1α", "PDGF-BB","M-CSF"
+)
+
+### Step 1: Intersect fibrotic cytokines
+fibro_intersection <- intersect(
+  fibro.cytokines,
+  intersect(colnames(res.final.bal$expr_combat), colnames(res.final.pbmc$expr_combat))
+)
+
+fibro_intersection
+setdiff(fibro.cytokines, fibro_intersection)
+
+```
+
+## 3.2 PCA + Biplot
+```{r fig.height=4, fig.width=10}
+
+## ============================================================
+## 4.6.6 PCA + Biplot (REVISED; rebuild missing variables)
+## Requires:
+##   - res.final.bal, res.final.pbmc already loaded
+##   - fibro_intersection already defined (from section 4)
+##   - condition2_cols already defined
+## ============================================================
+
+## ---- 0) Safety checks ----
+stopifnot(exists("res.final.bal"), exists("res.final.pbmc"))
+stopifnot(exists("fibro_intersection"))
+stopifnot(length(fibro_intersection) > 1)
+
+# Ensure Condition2 palette exists (fallback if not)
+if (!exists("condition2_cols")) {
+  condition2_cols <- setNames(c("#26547c","#ffd166","#ef476f"), c("C","CFN","CFB"))
+}
+
+## ---- 1) Build matched meta + expr for each compartment ----
+# BAL
+meta_bal <- res.final.bal$meta %>%
+  dplyr::mutate(
+    Record_ID  = as.character(Record_ID),
+    Subject_ID = as.character(Subject_ID),
+    Condition2 = factor(Condition2, levels = c("C","CFN","CFB"))
+  ) %>%
+  dplyr::select(Record_ID, Subject_ID, Condition2, Age, Sex, Batch, everything())
+
+expr_bal_i <- res.final.bal$expr_combat[, fibro_intersection, drop = FALSE]
+expr_bal_i <- as.matrix(expr_bal_i)
+storage.mode(expr_bal_i) <- "numeric"
+
+# enforce identical row order between meta and expression
+meta_bal <- meta_bal[match(rownames(expr_bal_i), meta_bal$Record_ID), , drop = FALSE]
+stopifnot(identical(meta_bal$Record_ID, rownames(expr_bal_i)))
+
+# PBMC
+meta_pbmc <- res.final.pbmc$meta %>%
+  dplyr::mutate(
+    Record_ID  = as.character(Record_ID),
+    Subject_ID = as.character(Subject_ID),
+    Condition2 = factor(Condition2, levels = c("C","CFN","CFB"))
+  ) %>%
+  dplyr::select(Record_ID, Subject_ID, Condition2, Age, Sex, Batch, everything())
+
+expr_pbmc_i <- res.final.pbmc$expr_combat[, fibro_intersection, drop = FALSE]
+expr_pbmc_i <- as.matrix(expr_pbmc_i)
+storage.mode(expr_pbmc_i) <- "numeric"
+
+meta_pbmc <- meta_pbmc[match(rownames(expr_pbmc_i), meta_pbmc$Record_ID), , drop = FALSE]
+stopifnot(identical(meta_pbmc$Record_ID, rownames(expr_pbmc_i)))
+
+## Optional: drop rows with missing Condition2 (keeps PCA/ellipses happy)
+keep_bal  <- !is.na(meta_bal$Condition2)
+keep_pbmc <- !is.na(meta_pbmc$Condition2)
+
+expr_bal_i  <- expr_bal_i[keep_bal, , drop = FALSE]
+meta_bal    <- meta_bal[keep_bal, , drop = FALSE]
+expr_pbmc_i <- expr_pbmc_i[keep_pbmc, , drop = FALSE]
+meta_pbmc   <- meta_pbmc[keep_pbmc, , drop = FALSE]
+
+## ---- 2) PCA + scatter + biplot (BAL) ----
+pca_bal <- prcomp(expr_bal_i, center = TRUE, scale. = TRUE)
+var_exp_bal <- summary(pca_bal)$importance[2, 1:2] * 100
+
+scores_bal <- as.data.frame(pca_bal$x[, 1:10, drop = FALSE], check.names = FALSE)
+scores_bal <- cbind(scores_bal, meta_bal)
+
+p1.bal <- ggplot(scores_bal, aes(PC1, PC2, color = Condition2, fill = Condition2)) +
+  geom_point(shape = 21, size = 1.6, alpha = 0.8, stroke = 0.8) +
+  stat_ellipse(
+    aes(group = Condition2),
+    type = "norm", level = 0.68, linewidth = 0.4,
+    geom = "polygon", alpha = 0.2, na.rm = TRUE
+  ) +
+  scale_color_manual(values = condition2_cols, name = "Clinical Group", na.translate = FALSE) +
+  scale_fill_manual(values  = condition2_cols, guide = "none", na.translate = FALSE) +
+  labs(
+    title = "BAL profibrotic cytokines",
+    x = paste0("PC1 (", round(var_exp_bal[1], 1), "%)"),
+    y = paste0("PC2 (", round(var_exp_bal[2], 1), "%)")
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.7),
+    axis.line = element_blank(),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+load_bal <- as.data.frame(pca_bal$rotation[, 1:2, drop = FALSE])
+load_bal$Cytokine <- rownames(load_bal)
+
+label_expand <- 1.1
+load_bal$lab_x <- load_bal$PC1 * label_expand
+load_bal$lab_y <- load_bal$PC2 * label_expand
+
+p2.bal <- ggplot() +
+  geom_segment(
+    data = load_bal,
+    aes(x = 0, y = 0, xend = PC1, yend = PC2),
+    arrow = arrow(length = unit(0.18, "cm")),
+    linewidth = 0.2, colour = "black"
+  ) +
+  geom_text_repel(
+    data = load_bal,
+    aes(x = lab_x, y = lab_y, label = Cytokine),
+    size = 2.5,
+    box.padding = 0.35,
+    point.padding = 0.25,
+    force = 2,
+    force_pull = 0.5,
+    min.segment.length = 0,
+    segment.size = 0.15,
+    segment.alpha = 0.7,
+    max.overlaps = 200
+  ) +
+  labs(x = "PC1 loading", y = "PC2 loading") +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.7),
+    axis.line = element_blank(),
+    legend.position = "bottom"
+  )
+
+## ---- 3) PCA + scatter + biplot (PBMC) ----
+pca_pbmc <- prcomp(expr_pbmc_i, center = TRUE, scale. = TRUE)
+var_exp_pbmc <- summary(pca_pbmc)$importance[2, 1:2] * 100
+
+scores_pbmc <- as.data.frame(pca_pbmc$x[, 1:10, drop = FALSE], check.names = FALSE)
+scores_pbmc <- cbind(scores_pbmc, meta_pbmc)
+
+p1.pbmc <- ggplot(scores_pbmc, aes(PC1, PC2, color = Condition2, fill = Condition2)) +
+  geom_point(shape = 24, size = 1.6, alpha = 0.8, stroke = 0.8) +
+  stat_ellipse(
+    aes(group = Condition2),
+    type = "norm", level = 0.68, linewidth = 0.4,
+    geom = "polygon", alpha = 0.2, na.rm = TRUE
+  ) +
+  scale_color_manual(values = condition2_cols, name = "Clinical Group", na.translate = FALSE) +
+  scale_fill_manual(values  = condition2_cols, guide = "none", na.translate = FALSE) +
+  labs(
+    title = "Plasma profibrotic cytokines",
+    x = paste0("PC1 (", round(var_exp_pbmc[1], 1), "%)"),
+    y = paste0("PC2 (", round(var_exp_pbmc[2], 1), "%)")
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.7),
+    axis.line = element_blank(),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5)
+  )
+
+load_pbmc <- as.data.frame(pca_pbmc$rotation[, 1:2, drop = FALSE])
+load_pbmc$Cytokine <- rownames(load_pbmc)
+
+load_pbmc$lab_x <- load_pbmc$PC1 * label_expand
+load_pbmc$lab_y <- load_pbmc$PC2 * label_expand
+
+p2.pbmc <- ggplot() +
+  geom_segment(
+    data = load_pbmc,
+    aes(x = 0, y = 0, xend = PC1, yend = PC2),
+    arrow = arrow(length = unit(0.18, "cm")),
+    linewidth = 0.2, colour = "black"
+  ) +
+  geom_text_repel(
+    data = load_pbmc,
+    aes(x = lab_x, y = lab_y, label = Cytokine),
+    size = 2.5,
+    box.padding = 0.35,
+    point.padding = 0.25,
+    force = 2,
+    force_pull = 0.5,
+    min.segment.length = 0,
+    segment.size = 0.15,
+    segment.alpha = 0.7,
+    max.overlaps = 200
+  ) +
+  labs(x = "PC1 loading", y = "PC2 loading") +
+  theme_classic(base_size = 12) +
+  theme(
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.7),
+    axis.line = element_blank(),
+    legend.position = "bottom"
+  )
+
+## ---- 4) Display ----
+(p1.bal | p2.bal) -> p.fibro_bal
+(p1.pbmc | p2.pbmc) -> p.fibro_pbmc
+
+p.fibro_bal
+p.fibro_pbmc
+```
+
+
+# 4 Cytokine concentration
+```{r fig.height=4, fig.width=6.5}
+# List to iterate over
+bal_pbmc_list <- list(BAL = res.final.bal, PBMC = res.final.pbmc)
+plot.list = list()
+
+for(sample_source in names(bal_pbmc_list)) {
+
+  res.obj <- bal_pbmc_list[[sample_source]]
+
+  # Pivot long, only fibro_intersection panel
+  df_long <- res.obj$expr_combat %>%
+    as.data.frame() %>%
+    rownames_to_column("Record_ID") %>%
+    dplyr::select(c("Record_ID", all_of(fibro_intersection))) %>%
+    pivot_longer(
+      cols      = -Record_ID,
+      names_to  = "Cytokine",
+      values_to = "expr_log2"
+    ) %>%
+    mutate(Concentration = expr_log2) %>%
+    left_join(
+      res.obj$meta %>% dplyr::select(Record_ID, ClinicalGroup = Condition2),
+      by = "Record_ID"
+    )
+
+  # Wilcoxon test per cytokine
+  stat.test <- df_long %>%
+    group_by(Cytokine) %>%
+    wilcox_test(Concentration ~ ClinicalGroup) %>%
+    adjust_pvalue(method = "BH") %>%
+    add_significance("p.adj") %>%
+    mutate(comparison = paste0(group2, " vs ", group1)) %>%
+    add_xy_position(x = "ClinicalGroup") %>%
+    ungroup()
+
+  # Only comparisons vs C
+  stat_vs_C <- stat.test %>%
+    dplyr::filter(group1 == "C" | group2 == "C") %>%
+    mutate(
+      other = ifelse(group1 == "C", group2, group1),
+      comp  = paste0(other, "_vs_C")
+    ) %>%
+    dplyr::select(Cytokine, comp, p.adj) %>%
+    pivot_wider(names_from = comp, values_from = p.adj)
+
+  if (!"CFB_vs_C" %in% names(stat_vs_C)) stat_vs_C$CFB_vs_C <- NA_real_
+  if (!"CFN_vs_C" %in% names(stat_vs_C)) stat_vs_C$CFN_vs_C <- NA_real_
+
+  # Robust ordering by categories
+  alpha <- 0.05
+
+  # Prepare pairs
+  stat_pairs <- stat.test %>%
+    dplyr::select(Cytokine, group1, group2, p.adj) %>%
+    mutate(comp = dplyr::case_when(
+      (group1 == "C" & group2 == "CFB") | (group1 == "CFB" & group2 == "C")    ~ "CFB_vs_C",
+      (group1 == "C" & group2 == "CFN") | (group1 == "CFN" & group2 == "C")    ~ "CFN_vs_C",
+      (group1 == "CFN" & group2 == "CFB") | (group1 == "CFB" & group2 == "CFN")~ "CFN_vs_CFB",
+      TRUE ~ paste0(group1, "_vs_", group2)
+    ))
+
+  stat_wide <- stat_pairs %>%
+    dplyr::select(Cytokine, comp, p.adj) %>%
+    pivot_wider(names_from = comp, values_from = p.adj)
+
+  all_cytokines <- unique(stat.test$Cytokine)
+  stat_wide_full <- tibble(Cytokine = all_cytokines) %>%
+    left_join(stat_wide, by = "Cytokine")
+
+  for (col in c("CFB_vs_C", "CFN_vs_C", "CFN_vs_CFB")) {
+    if (!col %in% names(stat_wide_full)) stat_wide_full[[col]] <- NA_real_
+  }
+
+  min_p_any <- stat.test %>%
+    group_by(Cytokine) %>%
+    summarize(min_p_any = ifelse(all(is.na(p.adj)), NA_real_, min(p.adj, na.rm = TRUE)), .groups = "drop")
+
+  stat_wide_full <- stat_wide_full %>% left_join(min_p_any, by = "Cytokine")
+
+  stat_wide_full <- stat_wide_full %>%
+    mutate(
+      CFB_sig = !is.na(CFB_vs_C) & CFB_vs_C < alpha,
+      CFN_sig = !is.na(CFN_vs_C) & CFN_vs_C < alpha,
+      CFNvsCFB_sig = !is.na(CFN_vs_CFB) & CFN_vs_CFB < alpha,
+      category = case_when(
+        CFB_sig & CFN_sig                                    ~ "both",
+        CFB_sig & !CFN_sig                                   ~ "CFB_only",
+        CFN_sig & !CFNvsCFB_sig                              ~ "CFN_only",
+        CFN_sig & CFNvsCFB_sig                               ~ "CFN_plus_CFNvsCFB",
+        TRUE                                                 ~ "none"
+      )
+    ) %>%
+    mutate(
+      sort_p = case_when(
+        category == "both"                ~ pmin(CFB_vs_C, CFN_vs_C, na.rm = TRUE),
+        category == "CFB_only"            ~ CFB_vs_C,
+        category == "CFN_only"            ~ CFN_vs_C,
+        category == "CFN_plus_CFNvsCFB"   ~ pmin(CFN_vs_C, CFN_vs_CFB, na.rm = TRUE),
+        TRUE                               ~ min_p_any
+      ),
+      sort_p = ifelse(is.na(sort_p) | !is.finite(sort_p), 1, sort_p)
+    )
+
+  category_levels <- c("both", "CFB_only", "CFN_only", "CFN_plus_CFNvsCFB", "none")
+  ordered_tbl <- stat_wide_full %>%
+    arrange(factor(category, levels = category_levels), sort_p, Cytokine)
+  ordered_levels <- ordered_tbl$Cytokine
+
+  sig_cytokines <- stat.test %>% dplyr::filter(p.adj < alpha) %>% pull(Cytokine) %>% unique()
+  df_sig   <- df_long %>% dplyr::filter(Cytokine %in% sig_cytokines) %>%
+               mutate(Cytokine = factor(as.character(Cytokine), levels = ordered_levels))
+  stat.sig <- stat.test %>% dplyr::filter(Cytokine %in% sig_cytokines) %>%
+               mutate(Cytokine = factor(as.character(Cytokine), levels = ordered_levels))
+
+  # Plot
+  if (nrow(df_sig) == 0) {
+  message("No significant cytokines to plot for ", sample_source, " – skipping plot.")
+} else {
+  condition2_cols <- c(
+    C = "#26547c",
+    CFN      = "#ffd166",
+    CFB    = "#ef476f"
+  )
+
+  p5 <- ggplot(df_sig, aes(x = ClinicalGroup, y = Concentration, color = ClinicalGroup)) +
+    geom_boxplot(
+      fill          = NA,
+      outlier.shape = NA,
+      position      = position_dodge(0.8),
+      width         = 0.6
+    ) +
+    geom_point(
+      position = position_dodge(width = 0.8),
+      size     = 0.5,
+      alpha    = 0.7
+    ) +
+    scale_color_manual(values = condition2_cols) +
+    scale_y_continuous(
+      expand = expansion(mult = c(0.05, 0.2)),
+      labels = scales::label_number(accuracy = 1)
+    ) +
+    stat_pvalue_manual(
+      stat.sig,
+      label        = "p.adj.signif",
+      tip.length   = 0.02,
+      bracket.size = 0.4,
+      vjust=0.2,
+      hide.ns = TRUE
+    ) +
+    facet_wrap(~ Cytokine, scales = "free_y", ncol = 4) +
+    coord_cartesian(clip = "off") +
+    theme_classic(base_size = 12) +
+    theme(
+      strip.text       = element_text(size = 9),
+      axis.text.y      = element_text(size = 8),
+      axis.title.x     = element_blank(),
+      axis.text.x      = element_blank(),
+      axis.ticks.x     = element_blank(),
+      axis.line        = element_blank(),
+      axis.title.y     = element_text(size = 10),
+      panel.border     = element_rect(color = "black", fill = NA, size = 0.2),
+      strip.background = element_rect(color = "black", fill = "white", size = 0.2),
+      panel.spacing    = unit(0.5, "lines"),
+      plot.margin      = unit(c(1,1,1,1), "lines"),
+      legend.position  = "none"
+    ) +
+    labs(y = paste0("[", sample_source, "] log1p pg/mL"))
+  
+  plot.list[[sample_source]] = p5
+  
+  print(p5)
+}
+}
+
+```
+
+# 5 Logitstic regression [individual]
+```{r}
+expr_fibro <- res.final.pbmc$expr_combat[, fibro_intersection, drop = FALSE]
+
+```
+
+## 5.1 CFB vs C
+```{r fig.height=5, fig.width=5}
+# prepare data and safe names
+df <- cbind(res.final.pbmc$meta, expr_fibro)
+df_cf <- subset(df, Condition2 %in% c("CFB","C"))
+df_cf$y <- ifelse(df_cf$Condition2 == "CFB", 1, 0)
+
+df_cf$Sex <- factor(df_cf$Sex)
+
+orig_cyt <- res.final$cyto_vars
+safe_cyt <- make.names(orig_cyt, unique = TRUE)
+map_cyt  <- setNames(safe_cyt, orig_cyt)
+
+# rename cytokine columns in a temporary df
+df2 <- df_cf
+present <- intersect(orig_cyt, names(df2))
+for (o in present) names(df2)[names(df2) == o] <- map_cyt[o]
+
+# helper to pick reasonable factor reference level
+pick_level <- function(f, prefer = c("No", "Male")) {
+  lv <- levels(f)
+  p  <- intersect(prefer, lv)
+  if (length(p)) p <- p[1] else p <- lv[1]
+  factor(p, levels = lv)
+}
+refs <- list(
+  Sex = pick_level(df2$Sex, "Male")
+)
+
+# result containers
+result_list <- vector("list", length(orig_cyt))
+names(result_list) <- orig_cyt
+predprob_list <- vector("list", length(orig_cyt))
+names(predprob_list) <- orig_cyt
+failed <- list()
+
+library(logistf)
+
+# make sure references are set (as you already do)
+df2$Sex <- relevel(df2$Sex, ref = "Male")
+
+for (orig in orig_cyt) {
+  safe <- map_cyt[orig]
+  if (!safe %in% names(df2)) { failed[[orig]] <- "missing column"; next }
+
+  # Firth logistic regression, adjusting for Age and Sex
+  fmla <- as.formula(sprintf("y ~ scale(%s) + Sex + Age", safe))
+  fit <- try(logistf::logistf(fmla, data = df2), silent = TRUE)
+  if (inherits(fit, "try-error")) { failed[[orig]] <- conditionMessage(attr(fit, "condition")); next }
+
+  coef_name <- paste0("scale(", safe, ")")
+  if (!coef_name %in% names(coef(fit))) { failed[[orig]] <- "coef not found"; next }
+
+  # point estimate (log-odds) and OR
+  beta <- unname(coef(fit)[coef_name])
+  OR   <- exp(beta)
+
+  # profile-likelihood CI via confint(); exponentiate to OR scale
+  ci    <- suppressWarnings(confint(fit)) # returns log-odds CI
+  ci_lo <- exp(ci[coef_name, 1])
+  ci_hi <- exp(ci[coef_name, 2])
+
+  # penalized likelihood-ratio p-value (logistf stores these in $prob)
+  pval <- unname(fit$prob[coef_name])
+
+  result_list[[orig]] <- data.frame(
+    cytokine = orig,
+    beta     = beta,
+    OR       = OR,
+    CI_lower = ci_lo,
+    CI_upper = ci_hi,
+    p_value  = pval,
+    stringsAsFactors = FALSE
+  )
+
+  # predicted probabilities across cytokine range (now includes Age & Sex)
+  xseq <- seq(min(df2[[safe]], na.rm = TRUE), max(df2[[safe]], na.rm = TRUE), length.out = 100)
+  newdata <- data.frame(
+    Age = rep(mean(df2$Age, na.rm = TRUE), length(xseq)),
+    Sex = factor(rep("Male", length(xseq)), levels = levels(df2$Sex))
+  )
+  newdata[[safe]] <- xseq
+
+  pred <- try(predict(fit, newdata = newdata, type = "link", se.fit = TRUE), silent = TRUE)
+  if (inherits(pred, "try-error")) {
+    failed[[orig]] <- paste("predict error:", conditionMessage(attr(pred, "condition"))); next
+  }
+  newdata$PredProb <- plogis(pred$fit)
+  newdata$LL       <- plogis(pred$fit - 1.96 * pred$se.fit)
+  newdata$UL       <- plogis(pred$fit + 1.96 * pred$se.fit)
+  predprob_list[[orig]] <- newdata
+}
+
+# --- Combined "module" row also via Firth, adjusted for Age & Sex -------------
+Z <- scale(expr_fibro)
+module_score <- rowMeans(Z, na.rm = TRUE)
+df_mod <- res.final.pbmc$meta %>% mutate(module_score = module_score)
+df_mod_sub <- df_mod %>% filter(Condition2 %in% c("CFB", "C")) %>% mutate(y = ifelse(Condition2 == "CFB", 1L, 0L))
+df_mod_sub$Sex <- relevel(factor(df_mod_sub$Sex), ref = "Male")
+
+fit_mod_cfb <- logistf::logistf(y ~ module_score + Age + Sex, data = df_mod_sub)
+coef_name_mod <- "module_score"
+beta_mod <- unname(coef(fit_mod_cfb)[coef_name_mod])
+OR_mod   <- exp(beta_mod)
+ci_mod   <- suppressWarnings(confint(fit_mod_cfb))
+ci_lo_mod <- exp(ci_mod[coef_name_mod, 1])
+ci_hi_mod <- exp(ci_mod[coef_name_mod, 2])
+p_mod     <- unname(fit_mod_cfb$prob[coef_name_mod])
+
+mod_row <- data.frame(
+  cytokine = "Combined",
+  beta     = beta_mod,
+  OR       = OR_mod,
+  CI_lower = ci_lo_mod,
+  CI_upper = ci_hi_mod,
+  p_value  = p_mod,
+  stringsAsFactors = FALSE
+)
+
+# bind and continue (p-value flagging, plotting, etc.)
+logit_results <- dplyr::bind_rows(do.call(rbind, result_list[!sapply(result_list, is.null)]), mod_row)
+
+# for plotting predicted probability
+newdata_cfb <- data.frame(
+  module_score = xseq,
+  Age = mean(df_mod_sub$Age, na.rm = TRUE),
+  Sex = factor("Male", levels = levels(df_mod_sub$Sex))
+)
+
+# ----------------------------------------------
+# Plot
+# ----------------------------------------------
+# ★ If anything duplicated (e.g., lingering Combined), keep last occurrence
+dfp <- logit_results %>%
+  group_by(cytokine) %>% slice_tail(n = 1) %>% ungroup() %>%
+  mutate(sig = !is.na(p_value) & p_value < 0.05) %>%
+  arrange(OR)
+
+# ★ Put "Combined" at the BOTTOM: make it the FIRST factor level
+levs <- c("Combined", setdiff(dfp$cytokine, "Combined"))
+dfp$cytokine <- factor(dfp$cytokine, levels = levs)
+
+df_combined <- dplyr::filter(dfp, cytokine == "Combined")
+
+common_xlim <- c(0.25, 128)
+p3.CFB <- ggplot(dfp, aes(x = OR, y = cytokine)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey60") +
+  geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper), height = 0.2, color = "grey40") +
+  geom_point(aes(color = sig), size = 3) +
+  scale_color_manual(values = c(`FALSE` = "grey40", `TRUE` = "red")) +
+  scale_x_log10(breaks = c(0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128),
+                labels = scales::comma_format(accuracy = 0.1)) +
+  scale_y_discrete(labels = function(y){
+    labs <- ifelse(y == "Combined",
+                   paste0('bold("', y, '")'),
+                   paste0('"', y, '"'))
+    parse(text = labs)
+  }) +
+  labs(title = "CFB vs C", x = "Odds ratio (log scale)", y = NULL) +
+  theme_bw() +
+  theme(axis.text.y = element_text(size = 8),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "right",
+        plot.margin = unit(c(1, 1.5, 1, 1), "lines")) +
+  guides(color = "none") +
+  geom_text(data = df_combined,
+            aes(label = paste0("p = ", signif(p_value, 3))),
+            hjust = -1.8, vjust = 0.5, size = 3) +
+  coord_cartesian(xlim = common_xlim)
+
+p3.CFB
+dfp_cfb <- dfp %>% as.data.frame() %>% mutate(Comparison=rep("CFB vs C",nrow(dfp)))
+```
+
+## 5.2 CFN vs C
+```{r fig.height=5, fig.width=5}
+# prepare data and safe names
+df <- cbind(res.final.pbmc$meta, expr_fibro)
+df_cf <- subset(df, Condition2 %in% c("CFN","C"))
+df_cf$y <- ifelse(df_cf$Condition2 == "CFN", 1, 0)
+
+df_cf$Sex <- factor(df_cf$Sex)
+
+orig_cyt <- res.final.pbmc$cyto_vars
+safe_cyt <- make.names(orig_cyt, unique = TRUE)
+map_cyt  <- setNames(safe_cyt, orig_cyt)
+
+# rename cytokine columns in a temporary df
+df2 <- df_cf
+present <- intersect(orig_cyt, names(df2))
+for (o in present) names(df2)[names(df2) == o] <- map_cyt[o]
+
+# helper to pick reasonable factor reference level
+pick_level <- function(f, prefer = c("No", "Male")) {
+  lv <- levels(f)
+  p  <- intersect(prefer, lv)
+  if (length(p)) p <- p[1] else p <- lv[1]
+  factor(p, levels = lv)
+}
+refs <- list(
+  Sex = pick_level(df2$Sex, "Male")
+)
+
+# result containers
+result_list <- vector("list", length(orig_cyt))
+names(result_list) <- orig_cyt
+predprob_list <- vector("list", length(orig_cyt))
+names(predprob_list) <- orig_cyt
+failed <- list()
+
+library(logistf)
+
+# make sure references are set (as you already do)
+df2$Sex <- relevel(df2$Sex, ref = "Male")
+
+for (orig in orig_cyt) {
+  safe <- map_cyt[orig]
+  if (!safe %in% names(df2)) { failed[[orig]] <- "missing column"; next }
+
+  # Firth logistic regression, adjusting for Age and Sex
+  fmla <- as.formula(sprintf("y ~ scale(%s) + Sex + Age", safe))
+  fit <- try(logistf::logistf(fmla, data = df2), silent = TRUE)
+  if (inherits(fit, "try-error")) { failed[[orig]] <- conditionMessage(attr(fit, "condition")); next }
+
+  coef_name <- paste0("scale(", safe, ")")
+  if (!coef_name %in% names(coef(fit))) { failed[[orig]] <- "coef not found"; next }
+
+  # point estimate (log-odds) and OR
+  beta <- unname(coef(fit)[coef_name])
+  OR   <- exp(beta)
+
+  # profile-likelihood CI via confint(); exponentiate to OR scale
+  ci    <- suppressWarnings(confint(fit)) # returns log-odds CI
+  ci_lo <- exp(ci[coef_name, 1])
+  ci_hi <- exp(ci[coef_name, 2])
+
+  # penalized likelihood-ratio p-value (logistf stores these in $prob)
+  pval <- unname(fit$prob[coef_name])
+
+  result_list[[orig]] <- data.frame(
+    cytokine = orig,
+    beta     = beta,
+    OR       = OR,
+    CI_lower = ci_lo,
+    CI_upper = ci_hi,
+    p_value  = pval,
+    stringsAsFactors = FALSE
+  )
+
+  # predicted probabilities across cytokine range (now includes Age & Sex)
+  xseq <- seq(min(df2[[safe]], na.rm = TRUE), max(df2[[safe]], na.rm = TRUE), length.out = 100)
+  newdata <- data.frame(
+    Age = rep(mean(df2$Age, na.rm = TRUE), length(xseq)),
+    Sex = factor(rep("Male", length(xseq)), levels = levels(df2$Sex))
+  )
+  newdata[[safe]] <- xseq
+
+  pred <- try(predict(fit, newdata = newdata, type = "link", se.fit = TRUE), silent = TRUE)
+  if (inherits(pred, "try-error")) {
+    failed[[orig]] <- paste("predict error:", conditionMessage(attr(pred, "condition"))); next
+  }
+  newdata$PredProb <- plogis(pred$fit)
+  newdata$LL       <- plogis(pred$fit - 1.96 * pred$se.fit)
+  newdata$UL       <- plogis(pred$fit + 1.96 * pred$se.fit)
+  predprob_list[[orig]] <- newdata
+}
+
+# --- Combined "module" row also via Firth, adjusted for Age & Sex -------------
+Z <- scale(expr_fibro)
+module_score <- rowMeans(Z, na.rm = TRUE)
+df_mod <- res.final.pbmc$meta %>% mutate(module_score = module_score)
+df_mod_sub <- df_mod %>% filter(Condition2 %in% c("CFN", "C")) %>% mutate(y = ifelse(Condition2 == "CFN", 1L, 0L))
+df_mod_sub$Sex <- relevel(factor(df_mod_sub$Sex), ref = "Male")
+
+fit_mod_CFN <- logistf::logistf(y ~ module_score + Age + Sex, data = df_mod_sub)
+coef_name_mod <- "module_score"
+beta_mod <- unname(coef(fit_mod_CFN)[coef_name_mod])
+OR_mod   <- exp(beta_mod)
+ci_mod   <- suppressWarnings(confint(fit_mod_CFN))
+ci_lo_mod <- exp(ci_mod[coef_name_mod, 1])
+ci_hi_mod <- exp(ci_mod[coef_name_mod, 2])
+p_mod     <- unname(fit_mod_CFN$prob[coef_name_mod])
+
+mod_row <- data.frame(
+  cytokine = "Combined",
+  beta     = beta_mod,
+  OR       = OR_mod,
+  CI_lower = ci_lo_mod,
+  CI_upper = ci_hi_mod,
+  p_value  = p_mod,
+  stringsAsFactors = FALSE
+)
+
+# bind and continue (p-value flagging, plotting, etc.)
+logit_results <- dplyr::bind_rows(do.call(rbind, result_list[!sapply(result_list, is.null)]), mod_row)
+
+# for plotting predicted probability
+newdata_CFN <- data.frame(
+  module_score = xseq,
+  Age = mean(df_mod_sub$Age, na.rm = TRUE),
+  Sex = factor("Male", levels = levels(df_mod_sub$Sex))
+)
+
+# ----------------------------------------------
+# Plot
+# ----------------------------------------------
+# ★ If anything duplicated (e.g., lingering Combined), keep last occurrence
+dfp <- logit_results %>%
+  group_by(cytokine) %>% slice_tail(n = 1) %>% ungroup() %>%
+  mutate(sig = !is.na(p_value) & p_value < 0.05) %>%
+  arrange(OR)
+
+# ★ Put "Combined" at the BOTTOM: make it the FIRST factor level
+levs <- c("Combined", setdiff(dfp$cytokine, "Combined"))
+dfp$cytokine <- factor(dfp$cytokine, levels = levs)
+
+df_combined <- dplyr::filter(dfp, cytokine == "Combined")
+
+common_xlim <- c(0.25, 128)
+p3.CFN <- ggplot(dfp, aes(x = OR, y = cytokine)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey60") +
+  geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper), height = 0.2, color = "grey40") +
+  geom_point(aes(color = sig), size = 3) +
+  scale_color_manual(values = c(`FALSE` = "grey40", `TRUE` = "red")) +
+  scale_x_log10(breaks = c(0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128),
+                labels = scales::comma_format(accuracy = 0.1)) +
+  scale_y_discrete(labels = function(y){
+    labs <- ifelse(y == "Combined",
+                   paste0('bold("', y, '")'),
+                   paste0('"', y, '"'))
+    parse(text = labs)
+  }) +
+  labs(title = "CFN vs C", x = "Odds ratio (log scale)", y = NULL) +
+  theme_bw() +
+  theme(axis.text.y = element_text(size = 8),
+        plot.title = element_text(hjust = 0.5),
+        legend.position = "right",
+        plot.margin = unit(c(1, 1.5, 1, 1), "lines")) +
+  guides(color = "none") +
+  geom_text(data = df_combined,
+            aes(label = paste0("p = ", signif(p_value, 3))),
+            hjust = -1.8, vjust = 0.5, size = 3) +
+  coord_cartesian(xlim = common_xlim)
+
+p3.CFN
+dfp_CFN <- dfp %>% as.data.frame() %>% mutate(Comparison=rep("CFN vs C",nrow(dfp)))
+```
+
+
+
+# 6 Save figures
+```{r}
+out <- here("data","plots","cytokine")
+if(!dir.exists(out)) {
+  dir.create(out,recursive = TRUE)
+}
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+
+# pca + loading
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+ggsave(plot=p.fibro_bal +
+  theme(plot.tag = element_text(size = 14, face = "bold")),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","pca.fibro_bal.jpeg"),
+       height=4,
+       width=10)
+ggsave(plot=p.fibro_pbmc +
+  theme(plot.tag = element_text(size = 14, face = "bold")),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","pca.fibro_pbmc.jpeg"),
+       height=4,
+       width=10)
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+
+# pca
+p1 +
+  theme(plot.tag = element_text(size = 14, face = "bold"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","PCA_all.jpeg"),
+       height=5,
+       width=4.5)
+
+p1_fibro +
+  theme(plot.tag = element_text(size = 14, face = "bold"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","PCA_fibro.jpeg"),
+       height=4,
+       width=4)
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+# correlation to pc
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+p2 +
+  theme(plot.tag = element_text(size = 14, face = "bold"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","PC1cor.jpeg"),
+       height=4,
+       width=3)
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+# loading plot
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+ggsave(plot=p_loading +
+  theme(plot.tag = element_text(size = 14, face = "bold")),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","PCloading.jpeg"),
+       height=3.75,
+       width=4)
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+# odds ratio
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+p3.CFN +
+  theme(plot.tag = element_text(size = 14, face = "bold"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","odd.cfn2.jpeg"),
+       height=5,
+       width=5)
+p3.CFB +
+  theme(plot.tag = element_text(size = 14, face = "bold"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","odd.cfb2.jpeg"),
+       height=5,
+       width=5)
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+
+# predicted prob
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+p_pred +
+  theme(plot.tag = element_text(size = 14, face = "bold"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","predictedProp2.jpeg"),
+       height=3.5,
+       width=3.5)
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+
+# cytokine conc overview
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+p5 +
+  theme(plot.tag = element_text(size = 14, face = "bold"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","cytokineConc.jpeg"),
+       height=12,
+       width=6.5)
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+
+# heatmap of profibrotic cytokines
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 2000)
+
+jpeg(
+  filename =paste0(out,"/","fibrocyto_heatmap.jpeg"),
+  width    = 4,      # inches
+  height   = 6,      # inches
+  units    = "in",
+  res      = 2000     # dpi
+)
+
+ht_cyto <- draw(ht,
+     show_heatmap_legend = FALSE,
+     show_annotation_legend = TRUE,
+     annotation_legend_side = "right",
+     heatmap_legend_side = "right",
+     annotation_legend = lgd_zscore,
+     padding = unit(c(1, 1, 1, 1), "cm")
+)
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+```

@@ -1,0 +1,1478 @@
+---
+title: 'BAL analysis'
+author:
+- name: Anson Wong
+date: "`r Sys.Date()`"
+description: null
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()
+
+```
+
+# 1 Load packages
+
+```{r}
+suppressPackageStartupMessages({
+library(Seurat)
+library(ComplexHeatmap)
+library(circlize)
+library(igraph)
+library(harmony)
+library(here)
+library(qs)
+library(forcats)
+library(pals)
+library(ggplot2)
+library(speckle)
+library(patchwork)
+library(dplyr)
+library(Cepo)
+library(phateR)
+library(rstatix)
+library(ggpubr)
+library(clustree)
+library(tidyverse)
+library(purrr)
+library(SeuratDisk)
+library(SingleCellExperiment)
+library(scran)
+library(sceasy)
+library(schard)
+library(BiocParallel)
+library(data.table)
+library(Matrix)
+library(edgeR)
+library(limma)
+library(RUVSeq)
+library(readr)
+library(tibble)
+library(stringr)
+library(future)
+library(future.apply)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(AnnotationDbi)
+})
+options(future.globals.maxSize = 500000000000, future.seed=TRUE)
+set.seed(1990)
+
+```
+
+```{r}
+# prepare colours
+colours <- c(brewer.paired(12), rev(brewer.pastel1(9)),  brewer.pastel2(8), brewer.spectral(11), 
+             rev(brewer.accent(8)), rev(brewer.dark2(8)), 
+             brewer.set1(9), brewer.pastel2(8), brewer.spectral(11), 
+             brewer.brbg(11)[1:5],rev(brewer.set3(12)),brewer.brbg(11)[6:11],
+             brewer.piyg(11)[1:5],brewer.piyg(11)[7:11], brewer.piyg(11)[1:5],brewer.piyg(11)[7:11])
+```
+
+# 2 Prepare objects
+## 2.1 Load objects
+```{r}
+seu <- qread(here("data","SCEs","analysis","bal.SEU.qs"),nthreads=24)
+```
+
+# 3 Find markers
+```{r}
+# ann_lv1
+cepoMarkers <- Cepo(seu[["SCT"]]@data,
+                    seu$ann_lv1,
+                    exprsPct = 0.2)
+cepoMarkers$stats <- cepoMarkers$stats[!grepl('^A[C|F|P|L][0|1]', row.names(cepoMarkers$stats)),]
+sapply(1:ncol(cepoMarkers$stats), function(i){
+  names(sort(cepoMarkers$stats[,i], decreasing = TRUE))[1:300]
+}) %>% data.frame() -> dat
+
+colnames(dat) <- colnames(cepoMarkers$stats)
+dat %>% data.frame() %>% write.csv(file = here("data","bal.markers.ann_lv1.csv"))
+
+dat
+
+# ann_lv2
+cepoMarkers2 <- Cepo(seu[["SCT"]]@data,
+                    seu$ann_lv2,
+                    exprsPct = 0.2)
+cepoMarkers2$stats <- cepoMarkers2$stats[!grepl('^A[C|F|P|L][0|1]', row.names(cepoMarkers2$stats)),]
+sapply(1:ncol(cepoMarkers2$stats), function(i){
+  names(sort(cepoMarkers2$stats[,i], decreasing = TRUE))[1:300]
+}) %>% data.frame() -> dat2
+
+colnames(dat2) <- colnames(cepoMarkers2$stats)
+dat2 %>% data.frame() %>% write.csv(file = here("data","bal.markers.ann_lv2.csv"))
+
+dat2
+```
+
+# 4 DE [ann_lv1]
+## 4.1 Pseudobulk
+```{r}
+DefaultAssay(seu) <- "RNA"
+
+out_dir <- here("data", "pseudobulk_matrix_bal_ann_lv1")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# store pseudobulk Seurat objects here
+pb_list <- list()
+
+# meta.data (avoid piping a Seurat object by accident)
+md <- seu[[]]
+cells <- rownames(md)
+
+safe_name <- function(x) {
+  # replace anything that's not alnum, dot, underscore, or dash with underscore
+  str_replace_all(x, "[^A-Za-z0-9._-]", "_")
+}
+
+# Choose workers (rule of thumb: <= number of cell types and <= CPU cores)
+workers <- min(24, parallel::detectCores())  # change 8 to what your machine allows
+
+# Linux: multicore is fastest; Windows: use multisession
+# plan(multicore, workers = workers)     # Linux/macOS
+plan(multisession, workers = workers)    # portable
+
+for (x in levels(seu$ann_lv1)) {
+  
+  if (x %in% c("AM","RecM","Prolif.M","cDC","pDC","B","Mast","Epithelial","Mast","Ambiguous")) {
+    message("[SKIP] ", x, ": skipping Ambiguous level")
+    next
+  }
+
+  per_sample <- md %>%
+    filter(ann_lv1 == x) %>%
+    dplyr::count(sampleID, name = "n")
+
+  if (nrow(per_sample) == 0) {
+    message("[SKIP] ", x, ": no cells found")
+    next
+  }
+
+  if (any(per_sample$n < 3)) {
+    bad <- paste(per_sample$sampleID[per_sample$n < 3], collapse = ", ")
+    message("[SKIP] ", x, ": <3 cells in sample(s): ", bad)
+    next
+  }
+
+  s <- subset(seu, subset = ann_lv1 == x)
+  DefaultAssay(s) <- "RNA"
+
+  pseudo_bulk <- AggregateExpression(
+    s, assays = "RNA", slot = "counts",
+    group.by = "ID2",
+    return.seurat = TRUE,
+    verbose = FALSE
+  )
+  
+  pseudo_bulk <- NormalizeData(pseudo_bulk,verbose = FALSE)
+  pb_list[[x]] <- pseudo_bulk
+  message("[OK] ", x, ": stored pseudobulk (", ncol(pseudo_bulk), " groups)")
+
+  pb_mat <- GetAssayData(pseudo_bulk, assay = "RNA", slot = "counts")
+  
+  fn <- file.path(out_dir, paste0(safe_name(x), "_counts.csv"))
+  write_csv(
+    rownames_to_column(as.data.frame(as.matrix(pb_mat), check.names = FALSE), "gene"),
+    fn
+  )
+  
+  message("[WRITE] ", x, " -> ", basename(fn))
+}
+
+```
+
+## 4.2 RUVseq [sex]
+```{r}
+## 4.2 RUVseq  (with Sex + confounding check; minimal changes)
+# ----------------------------
+# Config
+# ----------------------------
+pb_dir  <- here("data", "pseudobulk_matrix_bal_ann_lv1")
+ruv_dir <- here("data", "DE", "RUV_bal_ann_lv1")
+
+k_ruv <- 5
+min_max_count <- 10
+
+dir.create(ruv_dir, recursive = TRUE, showWarnings = FALSE)
+
+workers <- min(20, parallel::detectCores())
+plan(multisession, workers = workers)
+
+# ----------------------------
+# Helpers
+# ----------------------------
+read_counts_csv <- function(path) {
+  dat <- readr::read_csv(path, show_col_types = FALSE)
+  gene_col <- if ("gene" %in% names(dat)) "gene" else if ("Gene" %in% names(dat)) "Gene" else names(dat)[1]
+
+  counts <- dat %>%
+    dplyr::select(-all_of(gene_col)) %>%
+    as.data.frame(check.names = FALSE)
+
+  counts <- as.matrix(sapply(counts, as.numeric))
+  rownames(counts) <- dat[[gene_col]]
+
+  list(counts = counts, gene_col = gene_col)
+}
+
+# Uses your known ID2->Sex mapping from the table.
+# If any sampleID is missing here, it errors (so you notice immediately).
+make_sample_info <- function(sample_ids) {
+  sex_map <- c(
+    "C-NP1"="Male","C-NP2"="Male","C-NP3"="Male","C-NP4"="Male","C-4"="Male","C-5"="Male",
+    "CFN-1"="Male","CFN-2"="Female","CFN-3"="Male","CFN-4"="Male","CFN-5"="Male","CFN-6"="Female",
+    "CFB-1"="Male","CFB-2"="Male","CFB-3"="Female","CFB-4"="Male","CFB-5"="Female","CFB-6"="Male"
+  )
+
+  si <- tibble(sampleID = sample_ids) %>%
+    mutate(
+      group3 = case_when(
+        str_starts(sampleID, "C-")   ~ "C",
+        str_starts(sampleID, "CFN-") ~ "CFN",
+        str_starts(sampleID, "CFB-") ~ "CFB",
+        TRUE ~ NA_character_
+      ),
+      Sex = unname(sex_map[sampleID])
+    )
+
+  if (any(is.na(si$group3))) {
+    stop("Cannot parse group for: ", paste(si$sampleID[is.na(si$group3)], collapse = ", "))
+  }
+  if (any(is.na(si$Sex))) {
+    stop("Cannot parse Sex for: ", paste(si$sampleID[is.na(si$Sex)], collapse = ", "),
+         "\nAdd these sampleIDs to sex_map in make_sample_info().")
+  }
+
+  si$Sex <- factor(si$Sex, levels = c("Female", "Male"))
+  si
+}
+
+# returns list(design=..., msg="...") and decides whether Sex is estimable
+make_design_with_optional_sex <- function(sample_info) {
+  sample_info$group <- droplevels(factor(sample_info$group))
+  sample_info$Sex   <- droplevels(factor(sample_info$Sex))
+
+  design0 <- model.matrix(~0 + group, data = sample_info)
+  colnames(design0) <- sub("^group", "", colnames(design0))
+
+  # only try adding Sex if both sexes are present
+  if (nlevels(sample_info$Sex) < 2) {
+    return(list(design = design0, msg = "[DESIGN] Sex has <2 levels; using group-only design"))
+  }
+
+  design1 <- model.matrix(~0 + group + Sex, data = sample_info)
+  colnames(design1) <- sub("^group", "", colnames(design1))
+
+  # check estimability (full rank)
+  if (qr(design1)$rank < ncol(design1)) {
+    # Sex is confounded (or near-confounded) with group in this subset
+    return(list(
+      design = design0,
+      msg = paste0(
+        "[DESIGN] Sex confounded with group (rank-deficient); using group-only design. group x Sex = ",
+        paste(capture.output(print(table(sample_info$group, sample_info$Sex))), collapse = " ")
+      )
+    ))
+  }
+
+  list(
+    design = design1,
+    msg = paste0(
+      "[DESIGN] Using group+Sex design. group x Sex = ",
+      paste(capture.output(print(table(sample_info$group, sample_info$Sex))), collapse = " ")
+    )
+  )
+}
+
+run_ruvr_edger <- function(counts, sample_info, contrast_expr, out_csv,
+                           k_ruv = 5, min_max_count = 10, gene_col = "gene") {
+  keep <- apply(counts, 1, max) >= min_max_count
+  counts <- counts[keep, , drop = FALSE]
+
+  dge <- DGEList(counts = counts)
+  dge <- calcNormFactors(dge, method = "TMM")
+
+  # build design (group + Sex if estimable)
+  des <- make_design_with_optional_sex(sample_info)
+  design <- des$design
+
+  cont <- limma::makeContrasts(contrasts = contrast_expr, levels = design)
+
+  # initial fit for residuals used by RUVr
+  y0 <- estimateDisp(dge, design)
+  fit0 <- glmQLFit(y0, design)
+
+  ruv <- RUVSeq::RUVr(as.matrix(counts), rownames(counts), k_ruv,
+                      residuals = residuals(fit0))
+
+  design_ruv <- cbind(design, ruv$W)
+  cont_ruv <- rbind(cont, matrix(0, nrow = ncol(ruv$W), ncol = ncol(cont)))
+
+  y1 <- estimateDisp(dge, design_ruv)
+  fit1 <- glmQLFit(y1, design_ruv)
+  qlf <- glmQLFTest(fit1, contrast = cont_ruv)
+
+  out <- topTags(qlf, n = Inf, sort.by = "none")$table
+
+  res <- out %>%
+    tibble::rownames_to_column(var = gene_col) %>%
+    dplyr::rename(AveExpr = logCPM, P.Value = PValue, adj.P.Val = FDR) %>%
+    arrange(adj.P.Val, P.Value) %>%
+    filter(adj.P.Val < 0.1)
+
+  readr::write_csv(res, out_csv)
+  invisible(list(res = res, design_msg = des$msg))
+}
+
+contrasts <- list(
+  CFvsC  = list(groups = c("C", "CF"),  expr = "CF - C"),
+  CFNvsC = list(groups = c("C", "CFN"), expr = "CFN - C"),
+  CFBvsC = list(groups = c("C", "CFB"), expr = "CFB - C"),
+  CFBvsCFN = list(groups = c("CFB", "CFN"), expr = "CFB - CFN")
+)
+
+# ----------------------------
+# Work for one file (one cell type)
+# ----------------------------
+process_one_celltype <- function(f) {
+  celltype <- sub("_counts\\.csv$", "", basename(f))
+  cell_out_dir <- file.path(ruv_dir, celltype)
+  dir.create(cell_out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  obj <- read_counts_csv(f)
+  counts <- obj$counts
+  gene_col <- obj$gene_col
+
+  si_all <- make_sample_info(colnames(counts))
+
+  results <- list(celltype = celltype, ok = TRUE, messages = character())
+
+  for (nm in names(contrasts)) {
+    spec <- contrasts[[nm]]
+
+    si <- si_all %>%
+      mutate(group = case_when(
+        nm == "CFvsC" & group3 != "C" ~ "CF",
+        TRUE ~ group3
+      )) %>%
+      filter(group %in% spec$groups) %>%
+      mutate(group = factor(group, levels = spec$groups))
+
+    counts_sub <- counts[, si$sampleID, drop = FALSE]
+    out_csv <- file.path(cell_out_dir, paste0(celltype, "_", nm, ".csv"))
+
+    msg <- tryCatch({
+      ret <- run_ruvr_edger(counts_sub, si, spec$expr, out_csv,
+                            k_ruv = k_ruv, min_max_count = min_max_count, gene_col = gene_col)
+      paste0("[WRITE] ", basename(out_csv), " ", ret$design_msg)
+    }, error = function(e) {
+      paste0("[FAIL] ", celltype, " ", nm, ": ", conditionMessage(e))
+    })
+
+    results$messages <- c(results$messages, msg)
+  }
+
+  results
+}
+
+# ----------------------------
+# Parallel run
+# ----------------------------
+files <- sort(list.files(pb_dir, pattern = "_counts\\.csv$", full.names = TRUE))
+
+log <- future.apply::future_lapply(files, process_one_celltype, future.seed = TRUE)
+
+cat(paste(unlist(lapply(log, `[[`, "messages")), collapse = "\n"), "\n")
+message("Done. Outputs under: ", ruv_dir)
+
+```
+
+## 4.3 GSEA
+```{r}
+# -------
+# Config
+# ----------------------------
+ruv_dir <- here("data", "DE", "RUV_bal_ann_lv1")
+gsea_root <- here("data", "gsea_bal_ann_lv1")
+dir.create(gsea_root, recursive = TRUE, showWarnings = FALSE)
+
+workers <- min(24, parallel::detectCores())
+plan(multisession, workers = workers)   # use multicore on linux if you want
+
+# find all DE csvs under data/DE/RUV/<celltype>/*.csv
+csv_files <- sort(list.files(ruv_dir, pattern = "\\.csv$", recursive = TRUE, full.names = TRUE))
+if (length(csv_files) == 0) stop("No CSV files found under: ", ruv_dir)
+
+# ----------------------------
+# Worker: run gseGO on one file (ONE run on all genes; interpret NES sign later)
+# ----------------------------
+run_one_gsego <- function(de_csv, gsea_root) {
+  celltype <- basename(dirname(de_csv))
+  compare  <- str_remove(basename(de_csv), "^.*?_") %>% str_remove("\\.csv$")  # e.g. CFNvsC
+  prefix   <- str_remove(basename(de_csv), "\\.csv$")                         # e.g. CD4T.naive_CFNvsC
+
+  # read DE
+  de <- readr::read_csv(de_csv, show_col_types = FALSE)
+
+  # required columns check
+  if (!all(c("gene", "logFC") %in% names(de))) {
+    return(list(file = de_csv, ok = FALSE, msg = "[SKIP] missing gene/logFC"))
+  }
+
+  # build ranking (tutorial style)
+  gene_list <- de$logFC
+  names(gene_list) <- de$gene
+  gene_list <- gene_list[!is.na(gene_list) & !is.na(names(gene_list)) & names(gene_list) != ""]
+  gene_list <- sort(gene_list, decreasing = TRUE)
+
+  if (length(gene_list) < 10) {
+    return(list(file = de_csv, ok = FALSE, msg = "[SKIP] too few ranked genes"))
+  }
+
+  # run GSEA (GO BP)
+  set.seed(1)
+  gsea_res <- tryCatch(
+    gseGO(
+      geneList     = gene_list,
+      OrgDb        = org.Hs.eg.db,
+      keyType      = "SYMBOL",
+      ont          = "BP",
+      minGSSize    = 5,
+      pvalueCutoff = 0.05,
+      verbose      = FALSE
+    ),
+    error = function(e) e
+  )
+
+  if (inherits(gsea_res, "error") || is.null(gsea_res)) {
+    return(list(file = de_csv, ok = FALSE, msg = paste0("[FAIL] ", conditionMessage(gsea_res))))
+  }
+
+  gsea_tbl <- as.data.frame(gsea_res) %>% arrange(p.adjust)
+  if (nrow(gsea_tbl) == 0) {
+    return(list(file = de_csv, ok = TRUE, msg = "[SKIP] no enriched pathways (empty result)"))
+  }
+
+  # Keep only significant (you used pvalueCutoff=0.05 already, but be defensive)
+  gsea_tbl_sig <- gsea_tbl %>% filter(p.adjust < 0.1)
+  if (nrow(gsea_tbl_sig) == 0) {
+    return(list(file = de_csv, ok = TRUE, msg = "[SKIP] no enriched pathways (padj<0.1 none)"))
+  }
+
+  # Split into "up" vs "down" by NES sign (recommended way)
+  up_tbl <- gsea_tbl_sig %>% filter(NES > 0) %>% arrange(p.adjust)
+  dn_tbl <- gsea_tbl_sig %>% filter(NES < 0) %>% arrange(p.adjust)
+
+  # If neither direction has rows (unlikely), skip writing
+  if (nrow(up_tbl) == 0 && nrow(dn_tbl) == 0) {
+    return(list(file = de_csv, ok = TRUE, msg = "[SKIP] no NES>0 or NES<0 rows after filtering"))
+  }
+
+  # Create output subdir per celltype ONLY if there is something to write
+  out_dir <- file.path(gsea_root, celltype)
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Write (only if non-empty)
+  wrote <- character()
+
+  if (nrow(up_tbl) > 0) {
+    out_up <- file.path(out_dir, paste0(prefix, "_gsea_UP.csv"))
+    readr::write_csv(up_tbl, out_up)
+    wrote <- c(wrote, basename(out_up))
+  }
+
+  if (nrow(dn_tbl) > 0) {
+    out_dn <- file.path(out_dir, paste0(prefix, "_gsea_DOWN.csv"))
+    readr::write_csv(dn_tbl, out_dn)
+    wrote <- c(wrote, basename(out_dn))
+  }
+
+  list(
+    file = de_csv,
+    ok = TRUE,
+    msg = paste0("[WRITE] ", celltype, " ", compare, " -> ", paste(wrote, collapse = ", "))
+  )
+}
+
+# ----------------------------
+# Parallel run (one DE csv per worker)
+# ----------------------------
+log <- future.apply::future_lapply(
+  csv_files,
+  run_one_gsego,
+  gsea_root = gsea_root,
+  future.seed = TRUE
+)
+
+cat(paste(vapply(log, `[[`, "", "msg"), collapse = "\n"), "\n")
+message("Done. Outputs under: ", gsea_root)
+```
+
+## 4.4 GO overrepresentation
+```{r}
+
+# ---- config ----
+ruv_dir <- here("data", "DE", "RUV_bal_ann_lv2")
+out_dir <- here("data", "go_bal_ann_lv2")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+workers <- min(20, parallel::detectCores())   # adjust to your quota
+plan(multisession, workers = workers)         # use multicore on linux if you prefer
+
+# ---- find all RUV DE csvs ----
+ruv_csvs <- sort(list.files(ruv_dir, pattern = "\\.csv$", recursive = TRUE, full.names = TRUE))
+ruv_csvs <- ruv_csvs[str_detect(basename(ruv_csvs), "_(CFvsC|CFNvsC|CFBvsC)\\.csv$")]
+
+if (length(ruv_csvs) == 0) stop("No RUV DE CSV files found under: ", ruv_dir)
+
+# ---- worker function: process one DE csv ----
+process_one_ruv_de <- function(de_csv, out_dir) {
+  celltype <- basename(dirname(de_csv))
+  compare  <- str_match(basename(de_csv), "_(CFvsC|CFNvsC|CFBvsC)\\.csv$")[,2]
+
+  de <- readr::read_csv(de_csv, show_col_types = FALSE)
+
+  # guards / cleanup
+  if (!all(c("gene", "logFC") %in% names(de))) {
+    return(list(file = de_csv, ok = FALSE, msg = "Missing gene/logFC columns"))
+  }
+
+  de <- de %>% filter(!is.na(gene), gene != "", !is.na(logFC))
+  if (nrow(de) == 0) {
+    return(list(file = de_csv, ok = FALSE, msg = "Empty after filtering NA/blank genes"))
+  }
+
+  up   <- de %>% filter(logFC > 0) %>% distinct(gene)
+  down <- de %>% filter(logFC < 0) %>% distinct(gene)
+
+  # map SYMBOL -> ENTREZ for just this file
+  genes_all <- unique(de$gene)
+  sym2ent <- AnnotationDbi::mapIds(
+    x = org.Hs.eg.db,
+    keys = genes_all,
+    keytype = "SYMBOL",
+    column = "ENTREZID",
+    multiVals = "first"
+  )
+
+  to_entrez <- function(sym_vec) {
+    entrez <- unname(sym2ent[sym_vec])
+    entrez <- entrez[!is.na(entrez)]
+    unique(entrez)
+  }
+
+  up_entrez       <- to_entrez(up$gene)
+  down_entrez     <- to_entrez(down$gene)
+  universe_entrez <- to_entrez(unique(de$gene))
+
+  if (length(universe_entrez) < 10) {
+    return(list(file = de_csv, ok = FALSE, msg = "Too few mapped universe genes"))
+  }
+
+  # GO BP ORA
+  go.up.bp <- enrichGO(
+    gene          = up_entrez,
+    universe      = universe_entrez,
+    OrgDb         = org.Hs.eg.db,
+    keyType       = "ENTREZID",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    readable      = TRUE
+  )
+
+  go.down.bp <- enrichGO(
+    gene          = down_entrez,
+    universe      = universe_entrez,
+    OrgDb         = org.Hs.eg.db,
+    keyType       = "ENTREZID",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    readable      = TRUE
+  )
+
+  # simplify (only when results exist)
+  if (!is.null(go.up.bp) && nrow(go.up.bp@result) > 0)   go.up.bp <- clusterProfiler::simplify(go.up.bp)
+  if (!is.null(go.down.bp) && nrow(go.down.bp@result) > 0) go.down.bp <- clusterProfiler::simplify(go.down.bp)
+
+  mk_df <- function(go_obj, direction) {
+    if (!is.null(go_obj) && nrow(go_obj@result) > 0) {
+      go_obj@result %>%
+        dplyr::rename(Pathway = Description) %>%
+        dplyr::mutate(
+          Celltype = celltype,
+          Comparison = compare,
+          Direction = direction,
+          Genes = gsub("/", "; ", geneID)
+        ) %>%
+        dplyr::select(Pathway, Celltype, Comparison, Direction, ID, Count, pvalue, p.adjust, Genes) %>%
+        dplyr::slice_head(n = 50)
+    } else {
+      tibble::tibble()
+    }
+  }
+
+  up_df   <- mk_df(go.up.bp, "Up")
+  down_df <- mk_df(go.down.bp, "Down")
+
+  fn_up   <- file.path(out_dir, paste0(celltype, "_", compare, "_GO_BP-up_top50.csv"))
+  fn_down <- file.path(out_dir, paste0(celltype, "_", compare, "_GO_BP-down_top50.csv"))
+
+  readr::write_csv(up_df, fn_up)
+  readr::write_csv(down_df, fn_down)
+
+  list(file = de_csv, ok = TRUE,
+       msg = paste0("Wrote: ", basename(fn_up), " and ", basename(fn_down)))
+}
+
+# ---- parallel run ----
+log <- future.apply::future_lapply(
+  ruv_csvs,
+  process_one_ruv_de,
+  out_dir = out_dir,
+  future.seed = TRUE
+)
+
+cat(paste(vapply(log, `[[`, "", "msg"), collapse = "\n"), "\n")
+message("Done. GO ORA results under: ", out_dir)
+```
+
+
+
+
+# 4 DE [ann_lv2]
+## 4.1 Pseudobulk
+```{r}
+DefaultAssay(seu) <- "RNA"
+
+out_dir <- here("data", "pseudobulk_matrix_bal_ann_lv2")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# store pseudobulk Seurat objects here
+pb_list <- list()
+
+# meta.data (avoid piping a Seurat object by accident)
+md <- seu[[]]
+cells <- rownames(md)
+
+safe_name <- function(x) {
+  # replace anything that's not alnum, dot, underscore, or dash with underscore
+  str_replace_all(x, "[^A-Za-z0-9._-]", "_")
+}
+
+# Choose workers (rule of thumb: <= number of cell types and <= CPU cores)
+workers <- min(24, parallel::detectCores())  # change 8 to what your machine allows
+
+# Linux: multicore is fastest; Windows: use multisession
+# plan(multicore, workers = workers)     # Linux/macOS
+plan(multisession, workers = workers)    # portable
+
+for (x in levels(seu$ann_lv2)) {
+  
+  if (x == "Ambiguous") {
+    message("[SKIP] ", x, ": skipping Ambiguous level")
+    next
+  }
+
+  per_sample <- md %>%
+    filter(ann_lv2 == x) %>%
+    dplyr::count(sampleID, name = "n")
+
+  if (nrow(per_sample) == 0) {
+    message("[SKIP] ", x, ": no cells found")
+    next
+  }
+
+  if (any(per_sample$n < 3)) {
+    bad <- paste(per_sample$sampleID[per_sample$n < 3], collapse = ", ")
+    message("[SKIP] ", x, ": <3 cells in sample(s): ", bad)
+    next
+  }
+
+  s <- subset(seu, subset = ann_lv2 == x)
+  DefaultAssay(s) <- "RNA"
+
+  pseudo_bulk <- AggregateExpression(
+    s, assays = "RNA", slot = "counts",
+    group.by = "ID2",
+    return.seurat = TRUE,
+    verbose = FALSE
+  )
+  
+  pseudo_bulk <- NormalizeData(pseudo_bulk,verbose = FALSE)
+  pb_list[[x]] <- pseudo_bulk
+  message("[OK] ", x, ": stored pseudobulk (", ncol(pseudo_bulk), " groups)")
+
+  pb_mat <- GetAssayData(pseudo_bulk, assay = "RNA", slot = "counts")
+  
+  fn <- file.path(out_dir, paste0(safe_name(x), "_counts.csv"))
+  write_csv(
+    rownames_to_column(as.data.frame(as.matrix(pb_mat), check.names = FALSE), "gene"),
+    fn
+  )
+  
+  message("[WRITE] ", x, " -> ", basename(fn))
+}
+
+```
+
+## 4.2 RUVseq [sex]
+```{r}
+## 4.2 RUVseq  (with Sex + confounding check; minimal changes)
+# ----------------------------
+# Config
+# ----------------------------
+pb_dir  <- here("data", "pseudobulk_matrix_bal")
+ruv_dir <- here("data", "DE", "RUV_bal_ann_lv2")
+
+k_ruv <- 5
+min_max_count <- 10
+
+dir.create(ruv_dir, recursive = TRUE, showWarnings = FALSE)
+
+workers <- min(20, parallel::detectCores())
+plan(multisession, workers = workers)
+
+# ----------------------------
+# Helpers
+# ----------------------------
+read_counts_csv <- function(path) {
+  dat <- readr::read_csv(path, show_col_types = FALSE)
+  gene_col <- if ("gene" %in% names(dat)) "gene" else if ("Gene" %in% names(dat)) "Gene" else names(dat)[1]
+
+  counts <- dat %>%
+    dplyr::select(-all_of(gene_col)) %>%
+    as.data.frame(check.names = FALSE)
+
+  counts <- as.matrix(sapply(counts, as.numeric))
+  rownames(counts) <- dat[[gene_col]]
+
+  list(counts = counts, gene_col = gene_col)
+}
+
+# Uses your known ID2->Sex mapping from the table.
+# If any sampleID is missing here, it errors (so you notice immediately).
+make_sample_info <- function(sample_ids) {
+  sex_map <- c(
+    "C-NP1"="Male","C-NP2"="Male","C-NP3"="Male","C-NP4"="Male","C-4"="Male","C-5"="Male",
+    "CFN-1"="Male","CFN-2"="Female","CFN-3"="Male","CFN-4"="Male","CFN-5"="Male","CFN-6"="Female",
+    "CFB-1"="Male","CFB-2"="Male","CFB-3"="Female","CFB-4"="Male","CFB-5"="Female","CFB-6"="Male"
+  )
+
+  si <- tibble(sampleID = sample_ids) %>%
+    mutate(
+      group3 = case_when(
+        str_starts(sampleID, "C-")   ~ "C",
+        str_starts(sampleID, "CFN-") ~ "CFN",
+        str_starts(sampleID, "CFB-") ~ "CFB",
+        TRUE ~ NA_character_
+      ),
+      Sex = unname(sex_map[sampleID])
+    )
+
+  if (any(is.na(si$group3))) {
+    stop("Cannot parse group for: ", paste(si$sampleID[is.na(si$group3)], collapse = ", "))
+  }
+  if (any(is.na(si$Sex))) {
+    stop("Cannot parse Sex for: ", paste(si$sampleID[is.na(si$Sex)], collapse = ", "),
+         "\nAdd these sampleIDs to sex_map in make_sample_info().")
+  }
+
+  si$Sex <- factor(si$Sex, levels = c("Female", "Male"))
+  si
+}
+
+# returns list(design=..., msg="...") and decides whether Sex is estimable
+make_design_with_optional_sex <- function(sample_info) {
+  sample_info$group <- droplevels(factor(sample_info$group))
+  sample_info$Sex   <- droplevels(factor(sample_info$Sex))
+
+  design0 <- model.matrix(~0 + group, data = sample_info)
+  colnames(design0) <- sub("^group", "", colnames(design0))
+
+  # only try adding Sex if both sexes are present
+  if (nlevels(sample_info$Sex) < 2) {
+    return(list(design = design0, msg = "[DESIGN] Sex has <2 levels; using group-only design"))
+  }
+
+  design1 <- model.matrix(~0 + group + Sex, data = sample_info)
+  colnames(design1) <- sub("^group", "", colnames(design1))
+
+  # check estimability (full rank)
+  if (qr(design1)$rank < ncol(design1)) {
+    # Sex is confounded (or near-confounded) with group in this subset
+    return(list(
+      design = design0,
+      msg = paste0(
+        "[DESIGN] Sex confounded with group (rank-deficient); using group-only design. group x Sex = ",
+        paste(capture.output(print(table(sample_info$group, sample_info$Sex))), collapse = " ")
+      )
+    ))
+  }
+
+  list(
+    design = design1,
+    msg = paste0(
+      "[DESIGN] Using group+Sex design. group x Sex = ",
+      paste(capture.output(print(table(sample_info$group, sample_info$Sex))), collapse = " ")
+    )
+  )
+}
+
+run_ruvr_edger <- function(counts, sample_info, contrast_expr, out_csv,
+                           k_ruv = 5, min_max_count = 10, gene_col = "gene") {
+  keep <- apply(counts, 1, max) >= min_max_count
+  counts <- counts[keep, , drop = FALSE]
+
+  dge <- DGEList(counts = counts)
+  dge <- calcNormFactors(dge, method = "TMM")
+
+  # build design (group + Sex if estimable)
+  des <- make_design_with_optional_sex(sample_info)
+  design <- des$design
+
+  cont <- limma::makeContrasts(contrasts = contrast_expr, levels = design)
+
+  # initial fit for residuals used by RUVr
+  y0 <- estimateDisp(dge, design)
+  fit0 <- glmQLFit(y0, design)
+
+  ruv <- RUVSeq::RUVr(as.matrix(counts), rownames(counts), k_ruv,
+                      residuals = residuals(fit0))
+
+  design_ruv <- cbind(design, ruv$W)
+  cont_ruv <- rbind(cont, matrix(0, nrow = ncol(ruv$W), ncol = ncol(cont)))
+
+  y1 <- estimateDisp(dge, design_ruv)
+  fit1 <- glmQLFit(y1, design_ruv)
+  qlf <- glmQLFTest(fit1, contrast = cont_ruv)
+
+  out <- topTags(qlf, n = Inf, sort.by = "none")$table
+
+  res <- out %>%
+    tibble::rownames_to_column(var = gene_col) %>%
+    dplyr::rename(AveExpr = logCPM, P.Value = PValue, adj.P.Val = FDR) %>%
+    arrange(adj.P.Val, P.Value) %>%
+    filter(adj.P.Val < 0.1)
+
+  readr::write_csv(res, out_csv)
+  invisible(list(res = res, design_msg = des$msg))
+}
+
+contrasts <- list(
+  CFvsC  = list(groups = c("C", "CF"),  expr = "CF - C"),
+  CFNvsC = list(groups = c("C", "CFN"), expr = "CFN - C"),
+  CFBvsC = list(groups = c("C", "CFB"), expr = "CFB - C"),
+  CFBvsCFN = list(groups = c("CFB", "CFN"), expr = "CFB - CFN")
+)
+
+# ----------------------------
+# Work for one file (one cell type)
+# ----------------------------
+process_one_celltype <- function(f) {
+  celltype <- sub("_counts\\.csv$", "", basename(f))
+  cell_out_dir <- file.path(ruv_dir, celltype)
+  dir.create(cell_out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  obj <- read_counts_csv(f)
+  counts <- obj$counts
+  gene_col <- obj$gene_col
+
+  si_all <- make_sample_info(colnames(counts))
+
+  results <- list(celltype = celltype, ok = TRUE, messages = character())
+
+  for (nm in names(contrasts)) {
+    spec <- contrasts[[nm]]
+
+    si <- si_all %>%
+      mutate(group = case_when(
+        nm == "CFvsC" & group3 != "C" ~ "CF",
+        TRUE ~ group3
+      )) %>%
+      filter(group %in% spec$groups) %>%
+      mutate(group = factor(group, levels = spec$groups))
+
+    counts_sub <- counts[, si$sampleID, drop = FALSE]
+    out_csv <- file.path(cell_out_dir, paste0(celltype, "_", nm, ".csv"))
+
+    msg <- tryCatch({
+      ret <- run_ruvr_edger(counts_sub, si, spec$expr, out_csv,
+                            k_ruv = k_ruv, min_max_count = min_max_count, gene_col = gene_col)
+      paste0("[WRITE] ", basename(out_csv), " ", ret$design_msg)
+    }, error = function(e) {
+      paste0("[FAIL] ", celltype, " ", nm, ": ", conditionMessage(e))
+    })
+
+    results$messages <- c(results$messages, msg)
+  }
+
+  results
+}
+
+# ----------------------------
+# Parallel run
+# ----------------------------
+files <- sort(list.files(pb_dir, pattern = "_counts\\.csv$", full.names = TRUE))
+
+log <- future.apply::future_lapply(files, process_one_celltype, future.seed = TRUE)
+
+cat(paste(unlist(lapply(log, `[[`, "messages")), collapse = "\n"), "\n")
+message("Done. Outputs under: ", ruv_dir)
+
+```
+
+## 4.3 GSEA
+```{r}
+# -------
+# Config
+# ----------------------------
+ruv_dir <- here("data", "DE", "RUV_bal_ann_lv2")
+gsea_root <- here("data", "gsea_bal_ann_lv2")
+dir.create(gsea_root, recursive = TRUE, showWarnings = FALSE)
+
+workers <- min(24, parallel::detectCores())
+plan(multisession, workers = workers)   # use multicore on linux if you want
+
+# find all DE csvs under data/DE/RUV/<celltype>/*.csv
+csv_files <- sort(list.files(ruv_dir, pattern = "\\.csv$", recursive = TRUE, full.names = TRUE))
+if (length(csv_files) == 0) stop("No CSV files found under: ", ruv_dir)
+
+# ----------------------------
+# Worker: run gseGO on one file (ONE run on all genes; interpret NES sign later)
+# ----------------------------
+run_one_gsego <- function(de_csv, gsea_root) {
+  celltype <- basename(dirname(de_csv))
+  compare  <- str_remove(basename(de_csv), "^.*?_") %>% str_remove("\\.csv$")  # e.g. CFNvsC
+  prefix   <- str_remove(basename(de_csv), "\\.csv$")                         # e.g. CD4T.naive_CFNvsC
+
+  # read DE
+  de <- readr::read_csv(de_csv, show_col_types = FALSE)
+
+  # required columns check
+  if (!all(c("gene", "logFC") %in% names(de))) {
+    return(list(file = de_csv, ok = FALSE, msg = "[SKIP] missing gene/logFC"))
+  }
+
+  # build ranking (tutorial style)
+  gene_list <- de$logFC
+  names(gene_list) <- de$gene
+  gene_list <- gene_list[!is.na(gene_list) & !is.na(names(gene_list)) & names(gene_list) != ""]
+  gene_list <- sort(gene_list, decreasing = TRUE)
+
+  if (length(gene_list) < 10) {
+    return(list(file = de_csv, ok = FALSE, msg = "[SKIP] too few ranked genes"))
+  }
+
+  # run GSEA (GO BP)
+  set.seed(1)
+  gsea_res <- tryCatch(
+    gseGO(
+      geneList     = gene_list,
+      OrgDb        = org.Hs.eg.db,
+      keyType      = "SYMBOL",
+      ont          = "BP",
+      minGSSize    = 5,
+      pvalueCutoff = 0.05,
+      verbose      = FALSE
+    ),
+    error = function(e) e
+  )
+
+  if (inherits(gsea_res, "error") || is.null(gsea_res)) {
+    return(list(file = de_csv, ok = FALSE, msg = paste0("[FAIL] ", conditionMessage(gsea_res))))
+  }
+
+  gsea_tbl <- as.data.frame(gsea_res) %>% arrange(p.adjust)
+  if (nrow(gsea_tbl) == 0) {
+    return(list(file = de_csv, ok = TRUE, msg = "[SKIP] no enriched pathways (empty result)"))
+  }
+
+  # Keep only significant (you used pvalueCutoff=0.05 already, but be defensive)
+  gsea_tbl_sig <- gsea_tbl %>% filter(p.adjust < 0.1)
+  if (nrow(gsea_tbl_sig) == 0) {
+    return(list(file = de_csv, ok = TRUE, msg = "[SKIP] no enriched pathways (padj<0.1 none)"))
+  }
+
+  # Split into "up" vs "down" by NES sign (recommended way)
+  up_tbl <- gsea_tbl_sig %>% filter(NES > 0) %>% arrange(p.adjust)
+  dn_tbl <- gsea_tbl_sig %>% filter(NES < 0) %>% arrange(p.adjust)
+
+  # If neither direction has rows (unlikely), skip writing
+  if (nrow(up_tbl) == 0 && nrow(dn_tbl) == 0) {
+    return(list(file = de_csv, ok = TRUE, msg = "[SKIP] no NES>0 or NES<0 rows after filtering"))
+  }
+
+  # Create output subdir per celltype ONLY if there is something to write
+  out_dir <- file.path(gsea_root, celltype)
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  # Write (only if non-empty)
+  wrote <- character()
+
+  if (nrow(up_tbl) > 0) {
+    out_up <- file.path(out_dir, paste0(prefix, "_gsea_UP.csv"))
+    readr::write_csv(up_tbl, out_up)
+    wrote <- c(wrote, basename(out_up))
+  }
+
+  if (nrow(dn_tbl) > 0) {
+    out_dn <- file.path(out_dir, paste0(prefix, "_gsea_DOWN.csv"))
+    readr::write_csv(dn_tbl, out_dn)
+    wrote <- c(wrote, basename(out_dn))
+  }
+
+  list(
+    file = de_csv,
+    ok = TRUE,
+    msg = paste0("[WRITE] ", celltype, " ", compare, " -> ", paste(wrote, collapse = ", "))
+  )
+}
+
+# ----------------------------
+# Parallel run (one DE csv per worker)
+# ----------------------------
+log <- future.apply::future_lapply(
+  csv_files,
+  run_one_gsego,
+  gsea_root = gsea_root,
+  future.seed = TRUE
+)
+
+cat(paste(vapply(log, `[[`, "", "msg"), collapse = "\n"), "\n")
+message("Done. Outputs under: ", gsea_root)
+```
+
+## 4.4 GO overrepresentation
+```{r}
+
+# ---- config ----
+ruv_dir <- here("data", "DE", "RUV_bal_ann_lv2")
+out_dir <- here("data", "go_bal_ann_lv2")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+workers <- min(20, parallel::detectCores())   # adjust to your quota
+plan(multisession, workers = workers)         # use multicore on linux if you prefer
+
+# ---- find all RUV DE csvs ----
+ruv_csvs <- sort(list.files(ruv_dir, pattern = "\\.csv$", recursive = TRUE, full.names = TRUE))
+ruv_csvs <- ruv_csvs[str_detect(basename(ruv_csvs), "_(CFvsC|CFNvsC|CFBvsC)\\.csv$")]
+
+if (length(ruv_csvs) == 0) stop("No RUV DE CSV files found under: ", ruv_dir)
+
+# ---- worker function: process one DE csv ----
+process_one_ruv_de <- function(de_csv, out_dir) {
+  celltype <- basename(dirname(de_csv))
+  compare  <- str_match(basename(de_csv), "_(CFvsC|CFNvsC|CFBvsC)\\.csv$")[,2]
+
+  de <- readr::read_csv(de_csv, show_col_types = FALSE)
+
+  # guards / cleanup
+  if (!all(c("gene", "logFC") %in% names(de))) {
+    return(list(file = de_csv, ok = FALSE, msg = "Missing gene/logFC columns"))
+  }
+
+  de <- de %>% filter(!is.na(gene), gene != "", !is.na(logFC))
+  if (nrow(de) == 0) {
+    return(list(file = de_csv, ok = FALSE, msg = "Empty after filtering NA/blank genes"))
+  }
+
+  up   <- de %>% filter(logFC > 0) %>% distinct(gene)
+  down <- de %>% filter(logFC < 0) %>% distinct(gene)
+
+  # map SYMBOL -> ENTREZ for just this file
+  genes_all <- unique(de$gene)
+  sym2ent <- AnnotationDbi::mapIds(
+    x = org.Hs.eg.db,
+    keys = genes_all,
+    keytype = "SYMBOL",
+    column = "ENTREZID",
+    multiVals = "first"
+  )
+
+  to_entrez <- function(sym_vec) {
+    entrez <- unname(sym2ent[sym_vec])
+    entrez <- entrez[!is.na(entrez)]
+    unique(entrez)
+  }
+
+  up_entrez       <- to_entrez(up$gene)
+  down_entrez     <- to_entrez(down$gene)
+  universe_entrez <- to_entrez(unique(de$gene))
+
+  if (length(universe_entrez) < 10) {
+    return(list(file = de_csv, ok = FALSE, msg = "Too few mapped universe genes"))
+  }
+
+  # GO BP ORA
+  go.up.bp <- enrichGO(
+    gene          = up_entrez,
+    universe      = universe_entrez,
+    OrgDb         = org.Hs.eg.db,
+    keyType       = "ENTREZID",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    readable      = TRUE
+  )
+
+  go.down.bp <- enrichGO(
+    gene          = down_entrez,
+    universe      = universe_entrez,
+    OrgDb         = org.Hs.eg.db,
+    keyType       = "ENTREZID",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    readable      = TRUE
+  )
+
+  # simplify (only when results exist)
+  if (!is.null(go.up.bp) && nrow(go.up.bp@result) > 0)   go.up.bp <- clusterProfiler::simplify(go.up.bp)
+  if (!is.null(go.down.bp) && nrow(go.down.bp@result) > 0) go.down.bp <- clusterProfiler::simplify(go.down.bp)
+
+  mk_df <- function(go_obj, direction) {
+    if (!is.null(go_obj) && nrow(go_obj@result) > 0) {
+      go_obj@result %>%
+        dplyr::rename(Pathway = Description) %>%
+        dplyr::mutate(
+          Celltype = celltype,
+          Comparison = compare,
+          Direction = direction,
+          Genes = gsub("/", "; ", geneID)
+        ) %>%
+        dplyr::select(Pathway, Celltype, Comparison, Direction, ID, Count, pvalue, p.adjust, Genes) %>%
+        dplyr::slice_head(n = 50)
+    } else {
+      tibble::tibble()
+    }
+  }
+
+  up_df   <- mk_df(go.up.bp, "Up")
+  down_df <- mk_df(go.down.bp, "Down")
+
+  fn_up   <- file.path(out_dir, paste0(celltype, "_", compare, "_GO_BP-up_top50.csv"))
+  fn_down <- file.path(out_dir, paste0(celltype, "_", compare, "_GO_BP-down_top50.csv"))
+
+  readr::write_csv(up_df, fn_up)
+  readr::write_csv(down_df, fn_down)
+
+  list(file = de_csv, ok = TRUE,
+       msg = paste0("Wrote: ", basename(fn_up), " and ", basename(fn_down)))
+}
+
+# ---- parallel run ----
+log <- future.apply::future_lapply(
+  ruv_csvs,
+  process_one_ruv_de,
+  out_dir = out_dir,
+  future.seed = TRUE
+)
+
+cat(paste(vapply(log, `[[`, "", "msg"), collapse = "\n"), "\n")
+message("Done. GO ORA results under: ", out_dir)
+```
+
+
+
+
+# 5 Pseudobulk gene expression
+## 5.1 Aggregate expression
+```{r}
+# whole RecM
+DefaultAssay(seu) <- "RNA"
+#seu <- NormalizeData(seu)
+
+pseudo_bulk <- AggregateExpression(
+  seu,
+  assays = "RNA",
+  slot = "counts",
+  group.by = "sampleID",
+  return.seurat = TRUE
+)
+pseudo_bulk <- NormalizeData(pseudo_bulk)
+
+# CD8 TRM
+#s <- subset(seu, ann_lv2=="CD8T.TRM")
+md <- seu@meta.data
+cells.keep <- rownames(md)[!(md$ann_lv2 == "CD8T.TRM")]
+s <- subset(seu, cells = cells.keep)
+DefaultAssay(s) <- "RNA"
+
+pseudo_bulk.cd8TRM <- AggregateExpression(
+  s,
+  assays = "RNA",
+  slot = "counts",
+  group.by = "sampleID",
+  return.seurat = TRUE
+)
+pseudo_bulk.cd8TRM <- NormalizeData(pseudo_bulk.cd8TRM)
+
+# MDM-inflam
+s <- subset(seu, subtype=="MDM-inflam")
+DefaultAssay(s) <- "RNA"
+
+pseudo_bulk.inflam <- AggregateExpression(
+  seu,
+  assays = "RNA",
+  slot = "counts",
+  group.by = "sampleID",
+  return.seurat = TRUE
+)
+pseudo_bulk.inflam <- NormalizeData(pseudo_bulk.inflam)
+
+# whole BAL
+seu.combined <- qread(here("data","SCEs","manual.annot","bal.SEU.qs"),
+                      nthreads=24) # process it in 04.annotation.Rmd
+DefaultAssay(seu.combined) <- "RNA"
+
+pseudo_bulk.all <- AggregateExpression(
+  seu.combined,
+  assays = "RNA",
+  slot = "counts",
+  group.by = "sampleID",
+  return.seurat = TRUE
+)
+pseudo_bulk.all <- NormalizeData(pseudo_bulk.all)
+
+# Use the assay/slot you aggregated into. Here we assume "RNA" and slot = "data"
+pb_mat <- GetAssayData(pseudo_bulk, assay = "RNA", slot = "data")
+pb_mat.cd8TRM <- GetAssayData(pseudo_bulk.cd8TRM, assay = "RNA", slot = "data")
+
+
+```
+
+## 5.2 Plot Function
+```{r}
+plot_pb_gene <- function(pb_mat, gene, res.final, pal = NULL, zero_filter = TRUE, dodge_width = 0.8) {
+  # minimal checks
+  if (missing(pb_mat)) stop("pb_mat is required")
+  if (missing(gene)) stop("gene is required")
+  if (missing(res.final)) stop("res.final is required (must contain expr_combat and meta)")
+  if (!(is.matrix(pb_mat) || inherits(pb_mat, "Matrix") || is.data.frame(pb_mat))) {
+    stop("pb_mat must be a base matrix, Matrix (sparse), or data.frame with genes as rows")
+  }
+  if (!gene %in% rownames(pb_mat)) stop("gene '", gene, "' not found in pb_mat rownames")
+  if (!"expr_combat" %in% names(res.final)) stop("res.final$expr_combat not found")
+  if (!"meta" %in% names(res.final) || !"Record_ID" %in% names(res.final$meta)) stop("res.final$meta with Record_ID required")
+  if (!"Condition2" %in% names(res.final$meta)) stop("res.final$meta must contain Condition2")
+
+  # build pb_df
+  sample_ids <- colnames(pb_mat)
+  gene_col <- paste0(gene, "_expr")
+  gene_vec <- as.numeric(pb_mat[gene, , drop = TRUE])
+  pb_df <- data.frame(sampleID = sample_ids, stringsAsFactors = FALSE)
+  pb_df[[gene_col]] <- gene_vec
+
+  # attach cytokine/meta mapping using res.final (try exact rowname match, fallback to normalized match)
+  expr_c <- as.data.frame(res.final$expr_combat)
+  matched_idx <- match(pb_df$sampleID, rownames(expr_c))
+  if (!all(!is.na(matched_idx))) {
+    unmatched <- which(is.na(matched_idx))
+    if (length(unmatched) > 0) {
+      norm <- function(x) tolower(gsub("[^[:alnum:]]+", "", as.character(x)))
+      row_norm <- norm(rownames(expr_c))
+      pb_norm  <- norm(pb_df$sampleID[unmatched])
+      norm_idx <- match(pb_norm, row_norm)
+      matched_idx[unmatched] <- norm_idx
+    }
+  }
+  pb_df$Record_ID_matched <- ifelse(is.na(matched_idx), NA, rownames(expr_c)[matched_idx])
+  meta_df <- as.data.frame(res.final$meta)
+  pb_df$Condition2 <- meta_df$Condition2[ match(pb_df$Record_ID_matched, meta_df$Record_ID) ]
+  nas <- which(is.na(pb_df$Condition2))
+  if (length(nas) > 0) {
+    pb_df$Condition2[nas] <- meta_df$Condition2[ match(pb_df$sampleID[nas], meta_df$Record_ID) ]
+  }
+  if ("Condition2" %in% names(pb_df)) pb_df$Condition2 <- factor(pb_df$Condition2, levels = c("C","CFB","CFN"))
+
+  # apply zero filter if requested
+  if (zero_filter) {
+    pb_df <- pb_df[!is.na(pb_df[[gene_col]]) & pb_df[[gene_col]] != 0, ]
+  } else {
+    pb_df <- pb_df[!is.na(pb_df[[gene_col]]) & !is.na(pb_df$Condition2), ]
+  }
+  if (nrow(pb_df) == 0) stop("No samples available after filtering/matching")
+
+  # palette
+  if (is.null(pal)) {
+    if (exists("Condition2.colours")) pal <- get("Condition2.colours")
+    else if (exists("condition2_cols")) pal <- get("condition2_cols")
+  }
+  if (is.null(pal)) {
+    levs <- unique(pb_df$Condition2)
+    pal <- setNames(RColorBrewer::brewer.pal(max(3, length(levs)), "Dark2")[seq_along(levs)], levs)
+  }
+
+  # Wilcoxon tests
+  library(rstatix)
+  groups_present <- unique(na.omit(pb_df$Condition2))
+  stat.test.pb <- NULL
+  if (length(groups_present) >= 2) {
+    fmla <- as.formula(paste0(gene_col, " ~ Condition2"))
+    stat.test.pb <- tryCatch(
+      pb_df %>%
+        wilcox_test(formula = fmla, p.adjust.method = "BH") %>%
+        add_significance("p.adj") %>%
+        add_xy_position(x = "Condition2"),
+      error = function(e) {
+        warning("Failed to compute pairwise wilcox_test: ", conditionMessage(e))
+        NULL
+      }
+    )
+  }
+
+  # Plot
+  library(ggplot2)
+  library(scales)
+  p <- ggplot(pb_df, aes(x = Condition2, y = .data[[gene_col]], color = Condition2)) +
+    geom_boxplot(fill = NA, outlier.shape = NA, position = position_dodge(width = dodge_width)) +
+    geom_point(position = position_dodge(width = dodge_width), size = 2, alpha = 0.9) +
+    scale_color_manual(values = pal) +
+    scale_y_continuous(labels = scales::label_number()) +  # <-- force 1 decimal place
+    labs(y = "Pseudobulk expression (log1p)", title = gene) +
+    theme_classic(base_size = 16) +
+    theme(
+      axis.text.x      = element_text(angle = 40, hjust = 1, size = 10, colour = "black"),
+      axis.text.y      = element_text(size = 10, colour = "black"),
+      axis.title.y     = element_text(size = 12),
+      axis.title.x     = element_blank(),
+      axis.line        = element_blank(),
+      panel.border     = element_rect(size = 0.5, fill = "transparent"),
+      legend.position  = "none",
+      plot.title       = element_text(hjust = 0.5, size = 16, face = "bold.italic")
+    )
+
+  if (!is.null(stat.test.pb) && nrow(stat.test.pb) > 0) {
+    p <- p + stat_pvalue_manual(
+      stat.test.pb,
+      label = "p.adj.signif",
+      tip.length = 0.01,
+      bracket.size = 0.4,
+      hide.ns = TRUE
+    )
+  }
+
+  return(p)
+}
+
+
+```
+
+## 5.3 Plot
+```{r fig.height=4, fig.width=4}
+fibro.genes <- c("SPP1","CHIT1","CHI3L1","ITGB8","MMP9","MMP19","PLA2G7","LGMN","MERTK")
+inflam.genes <- c("CCL2","CCR2","CCL3","CCL4","IL6","CXCL8","IL1RN","TNFSF13","TNFSF12","TNFRSF1A","TNFSF13B","TNF","CSF1")
+genes <- c(fibro.genes, inflam.genes)
+
+genes <- c("ITGAE","CD69","ITGA1","RGS1","ITGAD")
+
+plot.list.cd8TRM <- list()
+plot.list.cd8TRM <- lapply(genes, FUN=function(g){
+  plot_pb_gene(pb_mat.cd8TRM, g, res.final = res.final.bal, zero_filter = TRUE)
+})
+names(plot.list.cd8TRM) <- genes
+
+
+# check plots
+plot.list.cd8TRM$ITGAE
+plot.list.cd8TRM$CD69
+plot.list.cd8TRM$ITGA1
+plot.list.cd8TRM$RGS1
+plot.list.cd8TRM$ITGAD
+
+```
+
+
+
+# 6 Save figures
+```{r}
+celltype <- "Tcell"
+out <- here("data","plots",celltype)
+if(!dir.exists(out)) {
+  dir.create(out,recursive = TRUE)
+}
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 1600)
+
+# test set dotplot 
+layout = "AA\nBB"
+p1 + p2 +
+  plot_layout(design = layout) +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","ttest_dotplot.jpeg"),
+       height=6,
+       width=6)
+
+# T test umap grouped by Naive Bayes classifier
+p8 +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","ttest_umap.jpeg"),
+       height=3,
+       width=8)
+
+# T cell umap grouped by Naive Bayes classifier
+p3 +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","T_umap.jpeg"),
+       height=3,
+       width=8)
+
+# merged set dotplot 
+layout = "AA\nBB"
+p4 + p5 +
+  plot_layout(design = layout) +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","T_dotplot.jpeg"),
+       height=6,
+       width=6)
+
+# feature plot (BAL)
+p6 +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","balT_featureplot.jpeg"),
+       height=8,
+       width=12)
+
+# feature plot (PBMC)
+p7 +
+  theme(plot.tag = element_text(size = 14, face = "bold", family="Arial"))
+
+ggsave(plot=last_plot(),
+       device="jpeg",
+       dpi=1600,
+       filename = paste0(out,"/","pbmcT_featureplot.jpeg"),
+       height=8,
+       width=12)
+
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 100)
+```

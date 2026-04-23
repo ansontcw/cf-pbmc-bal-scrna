@@ -1,0 +1,139 @@
+---
+title: 'Combine BAL pools into one object'
+author:
+- name: Anson Wong
+date: "`r Sys.Date()`"
+description: null
+output: html_document
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+xaringanExtra::use_panelset()
+
+```
+
+# 1 Load packages
+
+```{r}
+suppressPackageStartupMessages({
+library(SingleCellExperiment)
+library(Seurat)
+library(here)
+library(qs)
+library(forcats)
+})
+set.seed(1990)
+
+```
+
+# 2 Load data
+
+```{r}
+# load preprocessed objects
+sce1 <- qread(here("data","SCEs","preprocessed",paste0("BP1.preprocessed.SCE.qs")),nthreads=16)
+sce2 <- qread(here("data","SCEs","preprocessed",paste0("BP2.preprocessed.SCE.qs")),nthreads=16)
+sce3 <- qread(here("data","SCEs","preprocessed",paste0("Pi1.preprocessed.SCE.qs")),nthreads=16)
+sce4 <- qread(here("data","SCEs","preprocessed",paste0("capture1.preprocessed.SCE.qs")),nthreads=16)
+
+```
+
+# 3 Convert to Seurat object
+
+```{r}
+# set counts and gene names
+counts <- counts(sce1)
+rownames(counts) <- rowData(sce1)$Symbol
+seu1 <- CreateSeuratObject(counts=counts,
+                           meta.data = data.frame(colData(sce1)))
+counts <- counts(sce2)
+rownames(counts) <- rowData(sce2)$Symbol
+seu2 <- CreateSeuratObject(counts=counts,
+                           meta.data = data.frame(colData(sce2)))
+counts <- counts(sce3)
+rownames(counts) <- rowData(sce3)$Symbol
+seu3 <- CreateSeuratObject(counts=counts,
+                           meta.data = data.frame(colData(sce3)))
+counts <- counts(sce4)
+rownames(counts) <- rowData(sce4)$Symbol
+seu4 <- CreateSeuratObject(counts=counts,
+                           meta.data = data.frame(colData(sce4)))
+
+counts <- NULL
+
+# add experiment ID to metadata
+seu1 <- AddMetaData(seu1, factor("A"), col.name = "batchID")
+seu2 <- AddMetaData(seu2, factor("B"), col.name = "batchID")
+seu3 <- AddMetaData(seu3, factor("C"), col.name = "batchID")
+seu4 <- AddMetaData(seu4, factor("D"), col.name = "batchID")
+
+# add feature data frame
+seu1[["RNA"]]@meta.features <- data.frame(rowData(sce1))
+seu2[["RNA"]]@meta.features <- data.frame(rowData(sce2))
+seu3[["RNA"]]@meta.features <- data.frame(rowData(sce3))
+seu4[["RNA"]]@meta.features <- data.frame(rowData(sce4))
+```
+
+# 4 Combine Seurat objects
+
+```{r}
+seu <- merge(
+  seu1,
+  y=c(seu2,seu3,seu4),
+  add.cell.ids = c("A","B","C","D"),
+  project="BAL")
+
+```
+
+# 5 Keep CF samples with paired PBMC and all HC samples
+```{r}
+# Subset object
+seu.backup <- seu
+samples <- c("M1C166(1)","M1C176C","M1C180D","M1C190C","M1C191B","M1C196B",
+             "M1C198B","M1C199B","M1C201A","M1C207B","M1C208A","M1C209A",
+             "M1N087","M1N092","M1N066","M1N075","M1N078","M1N080")
+
+seu <- subset(seu.backup, sampleID %in% samples)
+seu$sampleID <- fct_drop(seu$sampleID)
+seu.backup <- NULL
+gc()
+
+# Number of droplets after annotation
+dim(seu)
+
+```
+
+# 6 Remove low-abundance genes (expressed in less than 3 cells)
+
+```{r}
+dim(seu)
+
+# Output a logical vector for every gene on whether the more than zero counts per cell
+# Extract counts
+counts <- GetAssayData(seu, slot = "counts")
+
+# Output a logical vector for every gene on whether the more than zero counts per cell
+nonzero <- counts > 0
+
+# Sums all TRUE values and returns TRUE if more than 3 TRUE values per gene
+keep_genes <- Matrix::rowSums(nonzero) >= 3
+
+# Only keeping those genes expressed in more than 10 cells
+filtered_counts <- counts[keep_genes, ]
+
+# Reassign to filtered Seurat object
+seu.filtered <- CreateSeuratObject(filtered_counts, meta.data = seu@meta.data)
+
+dim(seu.filtered)
+```
+
+# 7 Save objects
+
+```{r}
+out <- here("data","SCEs","preprocessed","bal.preprocessed.SEU.qs")
+
+if(!file.exists(out)) qsave(seu.filtered, out, nthreads=24)
+
+```

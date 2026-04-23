@@ -1,0 +1,19 @@
+---
+title: "About"
+output:
+  workflowr::wflow_html:
+    toc: false
+editor_options:
+  chunk_output_type: console
+---
+
+## Overview
+This site presents the code and results of demultiplexing and QC of paired BAL and PBMC single-cell RNA-seq data used for Chapter 3 of Wong ATC's PhD thesis [1].
+
+For all code and documentation, refer to the [GitHub repository](https://github.com/ansontcw/cf-pbmc-bal-scrna).
+
+Developers: Anson Wong, Hieu T Nim
+<br>Affiliation: Transcriptomics & Bioinformatics Group, Stem Cell Medicine Theme, Murdoch Children's Research Institute
+
+## References
+[1] Wong ATC. Integrated airway and blood immune profiling in early life cystic fibrosis [PhD thesis]. Melbourne: University of Melbourne; 2026.
