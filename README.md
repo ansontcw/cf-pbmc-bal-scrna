@@ -16,7 +16,7 @@ Computational analyses of single-cell RNA-sequencing (scRNA-seq) and multiplex i
 ## Developers
 
 Anson Wong, Hieu T Nim  
-[Transcriptomics & Bioinformatics Group](https://github.com/Ramialison-Lab), Stem Cell Medicine Theme  
+[Transcriptomics & Bioinformatics Group](https://ramialison-lab.github.io/), Stem Cell Medicine Theme  
 Murdoch Children's Research Institute, University of Melbourne
 
 ## References
